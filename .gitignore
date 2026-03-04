@@ -1,0 +1,29 @@
+.DS_Store
+.env
+
+broker/node_modules
+broker/.env
+.pnpm-store
+
+app/.build
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+
+# Xcode
+DerivedData/
+build/
+*.xcworkspace/xcuserdata/
+*.xcuserdatad/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
