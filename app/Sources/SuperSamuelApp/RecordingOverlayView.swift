@@ -2,6 +2,8 @@ import SwiftUI
 
 struct RecordingOverlayView: View {
     @ObservedObject var state: AppState
+    var onStop: (() -> Void)?
+    var onCopyAndStop: (() -> Void)?
     private let cardShape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
     var body: some View {
@@ -16,6 +18,30 @@ struct RecordingOverlayView: View {
                 Text(state.statusText)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(statusColor)
+
+                // Copy & Stop button
+                Button(action: { onCopyAndStop?() }) {
+                    Image(systemName: "doc.on.doc.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color.blue.opacity(0.9))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Copy transcript and stop")
+
+                // Stop button
+                Button(action: { onStop?() }) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color.red.opacity(0.9))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Stop recording")
             }
 
             HStack(spacing: 8) {

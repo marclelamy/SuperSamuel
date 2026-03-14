@@ -1,9 +1,20 @@
 import AppKit
+import Carbon
 import Foundation
 
 final class HotkeyService {
-    private var globalMonitor: Any?
-    private var localMonitor: Any?
+    private static let hotKeySignature: OSType = {
+        var result: FourCharCode = 0
+        for scalar in "SSHK".utf16 {
+            result = (result << 8) + FourCharCode(scalar)
+        }
+        return result
+    }()
+
+    private static var activeService: HotkeyService?
+    private static var eventHandler: EventHandlerRef?
+
+    private var hotKeyRef: EventHotKeyRef?
     private var onTrigger: (() -> Void)?
     private var lastTriggerTime: TimeInterval = 0
 
@@ -11,64 +22,114 @@ final class HotkeyService {
         stop()
     }
 
-    func start(onTrigger: @escaping () -> Void) {
+    @discardableResult
+    func start(onTrigger: @escaping () -> Void) -> Bool {
         stop()
         self.onTrigger = onTrigger
+        Self.activeService = self
 
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handle(event)
+        guard Self.installEventHandlerIfNeeded() else {
+            self.onTrigger = nil
+            Self.activeService = nil
+            return false
         }
 
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else {
-                return event
-            }
+        let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: 1)
+        var hotKeyRef: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            UInt32(kVK_Space),
+            UInt32(optionKey),
+            hotKeyID,
+            GetEventDispatcherTarget(),
+            0,
+            &hotKeyRef
+        )
 
-            if self.matchesShortcut(event) {
-                self.fireTriggerIfNeeded()
-                return nil
-            }
-            return event
+        guard status == noErr, let hotKeyRef else {
+            self.onTrigger = nil
+            Self.activeService = nil
+            return false
         }
+
+        self.hotKeyRef = hotKeyRef
+        return true
     }
 
     func stop() {
-        if let globalMonitor {
-            NSEvent.removeMonitor(globalMonitor)
-            self.globalMonitor = nil
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
         }
 
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
-            self.localMonitor = nil
+        if Self.activeService === self {
+            Self.activeService = nil
         }
 
         onTrigger = nil
     }
 
-    private func handle(_ event: NSEvent) {
-        guard matchesShortcut(event) else {
-            return
+    private static func installEventHandlerIfNeeded() -> Bool {
+        guard eventHandler == nil else {
+            return true
         }
-        fireTriggerIfNeeded()
+
+        var eventSpec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        let status = InstallEventHandler(
+            GetEventDispatcherTarget(),
+            { _, event, _ in
+                guard let service = HotkeyService.activeService else {
+                    return OSStatus(eventNotHandledErr)
+                }
+                return service.handleHotKeyEvent(event)
+            },
+            1,
+            &eventSpec,
+            nil,
+            &eventHandler
+        )
+
+        return status == noErr
     }
 
-    private func matchesShortcut(_ event: NSEvent) -> Bool {
-        if event.isARepeat {
-            return false
+    private func handleHotKeyEvent(_ event: EventRef?) -> OSStatus {
+        guard let event else {
+            return OSStatus(eventNotHandledErr)
         }
 
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        return event.keyCode == 49 && flags == [.option]
+        var hotKeyID = EventHotKeyID()
+        let status = GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotKeyID
+        )
+
+        guard status == noErr else {
+            return status
+        }
+        guard hotKeyID.signature == Self.hotKeySignature else {
+            return OSStatus(eventNotHandledErr)
+        }
+
+        fireTriggerIfNeeded()
+        return noErr
     }
 
     private func fireTriggerIfNeeded() {
         let now = Date().timeIntervalSince1970
-        // Global + local monitors can both fire around the same time.
         if now - lastTriggerTime < 0.15 {
             return
         }
         lastTriggerTime = now
-        onTrigger?()
+
+        DispatchQueue.main.async { [weak self] in
+            self?.onTrigger?()
+        }
     }
 }

@@ -19,11 +19,20 @@ final class TranscriptAssembler {
     private(set) var committedText = ""
     private(set) var interimText = ""
 
+    /// Tokens to filter out from the transcript (STT control tokens)
+    private let filteredTokens: Set<String> = ["<|end|>", "<|endoftext|>", "<|start|>"]
+
     func apply(tokens: [STTToken], finished: Bool) -> TranscriptSnapshot {
         var committedParts: [String] = []
         var interimParts: [String] = []
 
         for token in tokens {
+            // Skip control tokens
+            let trimmed = token.text.trimmingCharacters(in: .whitespaces)
+            if filteredTokens.contains(trimmed) {
+                continue
+            }
+
             if token.is_committed {
                 committedParts.append(token.text)
             } else {

@@ -20,26 +20,32 @@ final class TextInsertionService {
         autoPaste: Bool,
         restoreClipboard: Bool
     ) -> TextInsertionResult {
+        let snapshot = (autoPaste && restoreClipboard) ? clipboard.snapshot() : nil
+
+        // Step 1: Copy text to clipboard
+        clipboard.setString(text)
+
         if !autoPaste {
-            clipboard.setString(text)
             return .copiedOnly
         }
 
-        let snapshot = restoreClipboard ? clipboard.snapshot() : nil
-        clipboard.setString(text)
-        targetApplication?.activate(options: [.activateIgnoringOtherApps])
+        pasteClipboardContents(into: targetApplication)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            self?.simulateCommandV()
-
-            if let snapshot {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                    self?.clipboard.restore(snapshot)
-                }
+        if let snapshot {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
+                self?.clipboard.restore(snapshot)
             }
         }
 
         return .pastedFromClipboard
+    }
+
+    func pasteClipboardContents(into targetApplication: NSRunningApplication?) {
+        targetApplication?.activate(options: [.activateIgnoringOtherApps])
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.simulateCommandV()
+        }
     }
 
     private func simulateCommandV() {

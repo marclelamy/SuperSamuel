@@ -5,6 +5,8 @@ import SwiftUI
 final class OverlayWindowController {
     private let state: AppState
     private var panel: NSPanel?
+    var onStop: (() -> Void)?
+    var onCopyAndStop: (() -> Void)?
 
     init(state: AppState) {
         self.state = state
@@ -22,6 +24,8 @@ final class OverlayWindowController {
 
     private func ensurePanel() -> NSPanel {
         if let panel {
+            // Update the view with current callback
+            updatePanelContent(panel)
             return panel
         }
 
@@ -39,15 +43,20 @@ final class OverlayWindowController {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.ignoresMouseEvents = false
+        panel.isMovableByWindowBackground = true  // Allow dragging
 
-        let contentView = RecordingOverlayView(state: state)
+        updatePanelContent(panel)
+
+        self.panel = panel
+        return panel
+    }
+
+    private func updatePanelContent(_ panel: NSPanel) {
+        let contentView = RecordingOverlayView(state: state, onStop: onStop, onCopyAndStop: onCopyAndStop)
         let host = NSHostingView(rootView: contentView)
         host.frame = panel.contentView?.bounds ?? .zero
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
-
-        self.panel = panel
-        return panel
     }
 
     private func center(_ panel: NSPanel) {

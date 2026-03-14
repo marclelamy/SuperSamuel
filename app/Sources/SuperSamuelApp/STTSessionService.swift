@@ -2,8 +2,7 @@ import Foundation
 
 enum STTSessionError: LocalizedError {
     case notStarted
-    case brokerError(String)
-    case invalidBrokerResponse
+    case tokenError(String)
     case serverError(String)
     case socketClosed
 
@@ -11,26 +10,14 @@ enum STTSessionError: LocalizedError {
         switch self {
         case .notStarted:
             return "STT session is not started."
-        case .brokerError(let message):
-            return "Token broker error: \(message)"
-        case .invalidBrokerResponse:
-            return "Invalid token broker response."
+        case .tokenError(let message):
+            return "Token error: \(message)"
         case .serverError(let message):
             return "STT server error: \(message)"
         case .socketClosed:
             return "STT websocket closed unexpectedly."
         }
     }
-}
-
-private struct BrokerTokenResponse: Decodable {
-    let token: String
-    let expires_in: Int
-}
-
-private struct BrokerErrorResponse: Decodable {
-    let error: String?
-    let message: String?
 }
 
 private struct STTResponse: Decodable {
@@ -42,7 +29,7 @@ private struct STTResponse: Decodable {
 
 @MainActor
 final class STTSessionService {
-    private let brokerURL: URL
+    private let tokenService: TokenService
     private let urlSession: URLSession
     private let decoder = JSONDecoder()
     private let assembler = TranscriptAssembler()
@@ -54,8 +41,8 @@ final class STTSessionService {
 
     var onSnapshot: ((TranscriptSnapshot) -> Void)?
 
-    init(brokerURL: URL, urlSession: URLSession = .shared) {
-        self.brokerURL = brokerURL
+    init(tokenService: TokenService = TokenService(), urlSession: URLSession = .shared) {
+        self.tokenService = tokenService
         self.urlSession = urlSession
     }
 
@@ -81,7 +68,7 @@ final class STTSessionService {
 
         let data = try JSONSerialization.data(withJSONObject: firstPayload, options: [])
         guard let json = String(data: data, encoding: .utf8) else {
-            throw STTSessionError.invalidBrokerResponse
+            throw STTSessionError.serverError("Failed to encode session payload")
         }
 
         try await socket.send(.string(json))
@@ -109,7 +96,15 @@ final class STTSessionService {
             throw STTSessionError.notStarted
         }
 
-        try await socketTask.send(.string(""))
+        Task { [weak self] in
+            do {
+                try await socketTask.send(.string(""))
+            } catch {
+                await MainActor.run {
+                    self?.markTerminalError(error)
+                }
+            }
+        }
 
         let deadline = Date().addingTimeInterval(Double(max(timeoutMs, 300)) / 1000)
         while Date() < deadline {
@@ -136,28 +131,13 @@ final class STTSessionService {
     }
 
     private func fetchToken() async throws -> String {
-        var request = URLRequest(url: brokerURL)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 15
-
-        let (data, response) = try await urlSession.data(for: request)
-
-        guard let http = response as? HTTPURLResponse else {
-            throw STTSessionError.invalidBrokerResponse
+        do {
+            return try await tokenService.fetchToken()
+        } catch let error as TokenServiceError {
+            throw STTSessionError.tokenError(error.localizedDescription)
+        } catch {
+            throw STTSessionError.tokenError(error.localizedDescription)
         }
-
-        if !(200...299).contains(http.statusCode) {
-            let brokerError = try? decoder.decode(BrokerErrorResponse.self, from: data)
-            let message = brokerError?.message ?? brokerError?.error ?? "HTTP \(http.statusCode)"
-            throw STTSessionError.brokerError(message)
-        }
-
-        let payload = try decoder.decode(BrokerTokenResponse.self, from: data)
-        guard !payload.token.isEmpty else {
-            throw STTSessionError.invalidBrokerResponse
-        }
-
-        return payload.token
     }
 
     private func startReceiveLoop() {

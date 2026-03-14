@@ -73,17 +73,17 @@ final class AudioCaptureService {
             return
         }
 
+        isRunning = false
+
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
 
         chunkTimer?.cancel()
         chunkTimer = nil
 
-        processingQueue.sync { [weak self] in
-            self?.flushPendingBytesLocked()
+        processingQueue.async { [weak self] in
+            self?.pendingBytes.removeAll(keepingCapacity: true)
         }
-
-        isRunning = false
     }
 
     private func startChunkTimer() {
@@ -154,23 +154,54 @@ final class AudioCaptureService {
     }
 
     private func computeLevel(from buffer: AVAudioPCMBuffer) -> Float {
-        guard let floatData = buffer.floatChannelData else {
-            return 0
-        }
-
-        let samples = floatData[0]
         let count = Int(buffer.frameLength)
         guard count > 0 else {
             return 0
         }
 
+        let channelCount = max(Int(buffer.format.channelCount), 1)
         var sum: Float = 0
-        for index in 0..<count {
-            let sample = samples[index]
-            sum += sample * sample
+        var peak: Float = 0
+
+        switch buffer.format.commonFormat {
+        case .pcmFormatFloat32:
+            guard let channelData = buffer.floatChannelData else {
+                return 0
+            }
+            for channel in 0..<channelCount {
+                let samples = channelData[channel]
+                for index in 0..<count {
+                    let sample = samples[index]
+                    let magnitude = abs(sample)
+                    sum += sample * sample
+                    peak = max(peak, magnitude)
+                }
+            }
+        case .pcmFormatInt16:
+            guard let channelData = buffer.int16ChannelData else {
+                return 0
+            }
+            let scale = Float(Int16.max)
+            for channel in 0..<channelCount {
+                let samples = channelData[channel]
+                for index in 0..<count {
+                    let sample = Float(samples[index]) / scale
+                    let magnitude = abs(sample)
+                    sum += sample * sample
+                    peak = max(peak, magnitude)
+                }
+            }
+        default:
+            return 0
         }
 
-        let rms = sqrt(sum / Float(count))
-        return min(1, max(0, rms * 8))
+        let totalSamples = Float(count * channelCount)
+        let rms = sqrt(sum / totalSamples)
+        let rmsDb = 20 * log10(max(rms, 0.000_01))
+        let peakDb = 20 * log10(max(peak, 0.000_01))
+        let normalizedRMS = max(0, min(1, (rmsDb + 50) / 45))
+        let normalizedPeak = max(0, min(1, (peakDb + 45) / 40))
+
+        return min(1, max(normalizedRMS, normalizedPeak * 0.9))
     }
 }

@@ -11,7 +11,20 @@ final class ClipboardService {
 
     func snapshot() -> ClipboardSnapshot {
         let copiedItems = (pasteboard.pasteboardItems ?? []).compactMap { item in
-            item.copy() as? NSPasteboardItem
+            let duplicate = NSPasteboardItem()
+            var copiedAnyType = false
+
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    duplicate.setData(data, forType: type)
+                    copiedAnyType = true
+                } else if let string = item.string(forType: type) {
+                    duplicate.setString(string, forType: type)
+                    copiedAnyType = true
+                }
+            }
+
+            return copiedAnyType ? duplicate : nil
         }
         return ClipboardSnapshot(items: copiedItems)
     }
