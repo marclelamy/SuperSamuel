@@ -30,7 +30,7 @@ final class OverlayWindowController {
         }
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 200),
+            contentRect: NSRect(x: 0, y: 0, width: 430, height: 168),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
@@ -41,7 +41,7 @@ final class OverlayWindowController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = true  // Allow dragging
 
@@ -52,6 +52,7 @@ final class OverlayWindowController {
     }
 
     private func updatePanelContent(_ panel: NSPanel) {
+        panel.setContentSize(NSSize(width: 430, height: 168))
         let contentView = RecordingOverlayView(state: state, onStop: onStop, onCopyAndStop: onCopyAndStop)
         let host = NSHostingView(rootView: contentView)
         host.frame = panel.contentView?.bounds ?? .zero

@@ -14,11 +14,11 @@ enum DictationPhase: Equatable {
 final class AppState: ObservableObject {
     @Published var phase: DictationPhase = .idle
     @Published var elapsedSeconds: TimeInterval = 0
-    @Published var waveformSamples: [CGFloat] = Array(repeating: 0.05, count: 36)
+    @Published var waveformSamples: [CGFloat] = Array(repeating: 0, count: 96)
     @Published var transcriptPreviewLines: [String] = ["Press Option+Space to start dictation."]
     @Published var statusText: String = "Idle"
 
-    private let maxWaveSamples = 36
+    private let maxWaveSamples = 96
 
     func setPhase(_ phase: DictationPhase) {
         self.phase = phase
@@ -69,7 +69,7 @@ final class AppState: ObservableObject {
     func resetForRecording() {
         setPhase(.recording)
         setElapsed(seconds: 0)
-        waveformSamples = Array(repeating: 0.05, count: maxWaveSamples)
+        waveformSamples = Array(repeating: 0, count: maxWaveSamples)
         transcriptPreviewLines = ["Listening..."]
     }
 

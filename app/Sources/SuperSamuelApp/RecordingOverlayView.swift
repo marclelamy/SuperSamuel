@@ -4,106 +4,133 @@ struct RecordingOverlayView: View {
     @ObservedObject var state: AppState
     var onStop: (() -> Void)?
     var onCopyAndStop: (() -> Void)?
-    private let cardShape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+
+    private let cardShape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+    private let panelWidth: CGFloat = 430
+    private let controlSize: CGFloat = 36
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("SuperSamuel")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.primary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("SuperSamuel")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary)
 
-                Spacer()
-
-                Text(state.statusText)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(statusColor)
-
-                // Copy & Stop button
-                Button(action: { onCopyAndStop?() }) {
-                    Image(systemName: "doc.on.doc.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 28, height: 28)
-                        .background(Color.blue.opacity(0.9))
-                        .clipShape(Circle())
+                    Text(statusLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(statusColor.opacity(0.88))
                 }
-                .buttonStyle(.plain)
-                .help("Copy transcript and stop")
 
-                // Stop button
-                Button(action: { onStop?() }) {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 28, height: 28)
-                        .background(Color.red.opacity(0.9))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("Stop recording")
+                Spacer(minLength: 8)
+
+                controlButton(
+                    symbol: "doc.on.doc",
+                    action: onCopyAndStop,
+                    foreground: .primary,
+                    accent: nil,
+                    prominent: false,
+                    help: "Copy transcript and stop"
+                )
+
+                controlButton(
+                    symbol: "stop.fill",
+                    action: onStop,
+                    foreground: .white,
+                    accent: .red,
+                    prominent: true,
+                    help: "Stop recording"
+                )
             }
 
-            HStack(spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 Circle()
                     .fill(statusColor)
-                    .frame(width: 10, height: 10)
+                    .frame(width: 8, height: 8)
+
                 Text(formattedDuration(state.elapsedSeconds))
-                    .font(.system(.body, design: .monospaced))
+                    .font(.system(size: 26, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
             }
 
             WaveformView(samples: state.waveformSamples, color: statusColor)
-                .frame(height: 44)
+                .frame(height: 40)
 
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(state.transcriptPreviewLines, id: \.self) { line in
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(previewLines.enumerated()), id: \.offset) { index, line in
+                    let isLastLine = index == previewLines.count - 1
+
                     Text(line)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary)
+                        .font(.system(size: isLastLine ? 13.5 : 11.5, weight: isLastLine ? .medium : .regular))
+                        .foregroundStyle(isLastLine ? .primary : .secondary)
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 54, maxHeight: 54, alignment: .bottomLeading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(18)
-        .frame(width: 460)
-        .background {
-            ZStack {
-                VisualEffectGlassView(material: .hudWindow, blendingMode: .behindWindow, state: .active)
-                    .clipShape(cardShape)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: panelWidth)
+        .background { cardBackground }
+        .overlay { cardOverlay }
+        .shadow(color: .black.opacity(0.28), radius: 10, y: 4)
+        .environment(\.colorScheme, .dark)
+    }
 
-                // Top highlight to mimic glass edge light.
-                cardShape
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.20),
-                                Color.white.opacity(0.04),
-                                Color.clear
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .clipShape(cardShape)
-            }
+    private var previewLines: [String] {
+        Array(state.transcriptPreviewLines.suffix(2))
+    }
+
+    private var cardBackground: some View {
+        cardShape
+            .fill(Color.black.opacity(0.96))
+    }
+
+    private var cardOverlay: some View {
+        cardShape
+            .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+    }
+
+    private func controlButton(
+        symbol: String,
+        action: (() -> Void)?,
+        foreground: Color,
+        accent: Color?,
+        prominent: Bool,
+        help: String
+    ) -> some View {
+        Button(action: { action?() }) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(foreground)
+                .frame(width: controlSize, height: controlSize)
         }
-        .overlay {
-            cardShape
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.52),
-                            Color.white.opacity(0.12)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
+        .buttonStyle(.plain)
+        .background {
+            MinimalGlassSurface(shape: Circle(), accent: accent, prominent: prominent)
         }
-        .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+        .clipShape(Circle())
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private var statusLabel: String {
+        switch state.phase {
+        case .idle:
+            return "Ready"
+        case .recording:
+            return "Recording"
+        case .finalizing:
+            return "Finalizing"
+        case .inserting:
+            return "Inserting"
+        case .done:
+            return "Done"
+        case .error:
+            return "Error"
+        }
     }
 
     private var statusColor: Color {
@@ -131,21 +158,55 @@ struct RecordingOverlayView: View {
     }
 }
 
+private struct MinimalGlassSurface<S: Shape>: View {
+    let shape: S
+    var accent: Color?
+    var prominent = false
+
+    var body: some View {
+        ZStack {
+            shape
+                .fill(Color.black.opacity(prominent ? 0.84 : 0.72))
+
+            if let accent {
+                shape
+                    .fill(accent.opacity(prominent ? 0.34 : 0.14))
+            }
+
+            shape
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(prominent ? 0.10 : 0.06),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .blendMode(.screen)
+        }
+        .overlay {
+            shape
+                .stroke(Color.white.opacity(prominent ? 0.18 : 0.10), lineWidth: 1)
+        }
+    }
+}
+
 private struct WaveformView: View {
     let samples: [CGFloat]
     let color: Color
 
+    private let spacing: CGFloat = 2
+
     var body: some View {
         GeometryReader { geometry in
-            HStack(alignment: .center, spacing: 3) {
+            HStack(alignment: .center, spacing: spacing) {
                 ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
                     Capsule(style: .continuous)
                         .fill(
                             LinearGradient(
-                                colors: [
-                                    color.opacity(0.95),
-                                    color.opacity(0.55)
-                                ],
+                                colors: barGradient(for: sample),
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
@@ -157,17 +218,30 @@ private struct WaveformView: View {
         }
     }
 
+    private func barGradient(for sample: CGFloat) -> [Color] {
+        let clamped = max(0, min(sample, 1))
+        let accentOpacity = 0.42 + (clamped * 0.38)
+        return [
+            Color.white.opacity(0.96),
+            Color.white.opacity(Double(accentOpacity)),
+            Color.white.opacity(Double(accentOpacity * 0.88))
+        ]
+    }
+
     private func barWidth(in totalWidth: CGFloat) -> CGFloat {
         guard !samples.isEmpty else {
             return 2
         }
-        let spacing = CGFloat(samples.count - 1) * 3
-        return max(2, (totalWidth - spacing) / CGFloat(samples.count))
+
+        let totalSpacing = CGFloat(samples.count - 1) * spacing
+        let calculated = (totalWidth - totalSpacing) / CGFloat(samples.count)
+        return max(1.25, calculated)
     }
 
     private func barHeight(_ sample: CGFloat) -> CGFloat {
-        let minimum: CGFloat = 6
-        let maxHeight: CGFloat = 42
-        return minimum + ((maxHeight - minimum) * sample)
+        let clamped = max(0, min(sample, 1))
+        let minimum: CGFloat = 3
+        let shapedSample = pow(clamped, 1.7)
+        return minimum + (34 * shapedSample)
     }
 }
