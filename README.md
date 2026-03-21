@@ -111,7 +111,9 @@ If Accessibility permission is missing, use the menu bar action `Open Accessibil
 ## Notes
 
 - Tokens are fetched directly from SinusoidLabs in the current app flow; the local broker is not needed.
-- Default final tail wait: `1800ms`
 - Menu bar options include toggles for:
   - Auto Paste Result
   - Restore Clipboard
+
+
+Le truc de l'espace, il marche trop bien. Genre, en vrai, franchement, genre, il marche de ouf. Et aussi, parfois, il y a des petits bugs, parce que genre, si t'as pas le... si par exemple la tuile, t'as rien de focus,

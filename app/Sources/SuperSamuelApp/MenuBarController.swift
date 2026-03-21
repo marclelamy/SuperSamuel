@@ -5,6 +5,7 @@ import Foundation
 final class MenuBarController: NSObject {
     var onToggleRecording: (() -> Void)?
     var onCopyLastTranscript: (() -> Void)?
+    var onOpenSettings: (() -> Void)?
     var onOpenAccessibilitySettings: (() -> Void)?
     var onSettingsChanged: (() -> Void)?
 
@@ -15,6 +16,7 @@ final class MenuBarController: NSObject {
     private let copyItem = NSMenuItem(title: "Copy Last Transcript", action: nil, keyEquivalent: "")
     private let autoPasteItem = NSMenuItem(title: "Auto Paste Result", action: nil, keyEquivalent: "")
     private let restoreClipboardItem = NSMenuItem(title: "Restore Clipboard", action: nil, keyEquivalent: "")
+    private let openSettingsItem = NSMenuItem(title: "Settings...", action: nil, keyEquivalent: ",")
     private let openAccessibilityItem = NSMenuItem(title: "Open Accessibility Settings", action: nil, keyEquivalent: "")
     private let quitItem = NSMenuItem(title: "Quit SuperSamuel", action: nil, keyEquivalent: "q")
 
@@ -40,10 +42,10 @@ final class MenuBarController: NSObject {
             toggleRecordingItem.title = "Stop Recording (Option+Space)"
         case .finalizing:
             button.title = "SS ..."
-            toggleRecordingItem.title = "Stop Recording (Option+Space)"
+            toggleRecordingItem.title = "Cancel Finalizing (Option+Space)"
         case .inserting:
-            button.title = "SS INS"
-            toggleRecordingItem.title = "Start Recording (Option+Space)"
+            button.title = "SS AI"
+            toggleRecordingItem.title = "Cancel AI Cleanup (Option+Space)"
         case .done:
             button.title = "SS"
             toggleRecordingItem.title = "Start Recording (Option+Space)"
@@ -68,6 +70,9 @@ final class MenuBarController: NSObject {
         restoreClipboardItem.target = self
         restoreClipboardItem.action = #selector(handleToggleRestoreClipboard)
 
+        openSettingsItem.target = self
+        openSettingsItem.action = #selector(handleOpenSettings)
+
         openAccessibilityItem.target = self
         openAccessibilityItem.action = #selector(handleOpenAccessibility)
 
@@ -80,6 +85,7 @@ final class MenuBarController: NSObject {
         menu.addItem(autoPasteItem)
         menu.addItem(restoreClipboardItem)
         menu.addItem(.separator())
+        menu.addItem(openSettingsItem)
         menu.addItem(openAccessibilityItem)
         menu.addItem(.separator())
         menu.addItem(quitItem)
@@ -116,6 +122,11 @@ final class MenuBarController: NSObject {
         settings.restoreClipboard.toggle()
         refreshCheckmarks()
         onSettingsChanged?()
+    }
+
+    @objc
+    private func handleOpenSettings() {
+        onOpenSettings?()
     }
 
     @objc

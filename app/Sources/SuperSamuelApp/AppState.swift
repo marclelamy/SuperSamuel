@@ -17,6 +17,7 @@ final class AppState: ObservableObject {
     @Published var waveformSamples: [CGFloat] = Array(repeating: 0, count: 96)
     @Published var transcriptPreviewLines: [String] = ["Press Option+Space to start dictation."]
     @Published var statusText: String = "Idle"
+    @Published var aiCleanupEnabled = true
 
     private let maxWaveSamples = 96
 
@@ -30,7 +31,7 @@ final class AppState: ObservableObject {
         case .finalizing:
             statusText = "Finalizing"
         case .inserting:
-            statusText = "Inserting"
+            statusText = "AI Cleanup"
         case .done:
             statusText = "Done"
         case .error(let message):

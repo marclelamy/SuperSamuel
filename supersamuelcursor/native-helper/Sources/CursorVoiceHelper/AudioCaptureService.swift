@@ -17,16 +17,14 @@ enum AudioCaptureError: LocalizedError {
 
 final class AudioCaptureService {
     var onChunk: ((Data) -> Void)?
-    var onLevel: ((Float) -> Void)?
 
     private let engine = AVAudioEngine()
-    private let processingQueue = DispatchQueue(label: "supersamuel.audio.processing")
+    private let processingQueue = DispatchQueue(label: "cursorvoice.audio.processing")
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private var chunkTimer: DispatchSourceTimer?
     private var pendingBytes = Data()
     private var isRunning = false
-    private var waveformModel = WaveformModel()
 
     func start() throws {
         guard !isRunning else {
@@ -54,7 +52,6 @@ final class AudioCaptureService {
 
         self.converter = converter
         self.targetFormat = targetFormat
-        waveformModel.reset()
         pendingBytes.removeAll(keepingCapacity: true)
 
         inputNode.removeTap(onBus: 0)
@@ -68,24 +65,20 @@ final class AudioCaptureService {
         isRunning = true
     }
 
-    @discardableResult
-    func stop() -> Data {
+    func stop() {
         guard isRunning else {
-            return Data()
+            return
         }
 
         isRunning = false
-
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
 
         chunkTimer?.cancel()
         chunkTimer = nil
 
-        return processingQueue.sync {
-            let finalChunk = pendingBytes
-            pendingBytes.removeAll(keepingCapacity: true)
-            return finalChunk
+        processingQueue.async { [weak self] in
+            self?.pendingBytes.removeAll(keepingCapacity: true)
         }
     }
 
@@ -100,12 +93,6 @@ final class AudioCaptureService {
     }
 
     private func processInputBuffer(_ inputBuffer: AVAudioPCMBuffer, inputFormat: AVAudioFormat) {
-        let metrics = computeMetrics(from: inputBuffer)
-        let level = waveformModel.process(metrics)
-        DispatchQueue.main.async { [weak self] in
-            self?.onLevel?(level)
-        }
-
         guard let converter, let targetFormat else {
             return
         }
@@ -154,58 +141,5 @@ final class AudioCaptureService {
         let chunk = pendingBytes
         pendingBytes.removeAll(keepingCapacity: true)
         onChunk?(chunk)
-    }
-
-    private func computeMetrics(from buffer: AVAudioPCMBuffer) -> WaveformInputMetrics {
-        let count = Int(buffer.frameLength)
-        guard count > 0 else {
-            return WaveformInputMetrics(rms: 0, peak: 0, sampleDuration: 0.05)
-        }
-
-        let channelCount = max(Int(buffer.format.channelCount), 1)
-        var sum: Float = 0
-        var peak: Float = 0
-
-        switch buffer.format.commonFormat {
-        case .pcmFormatFloat32:
-            guard let channelData = buffer.floatChannelData else {
-                return WaveformInputMetrics(rms: 0, peak: 0, sampleDuration: 0.05)
-            }
-            for channel in 0..<channelCount {
-                let samples = channelData[channel]
-                for index in 0..<count {
-                    let sample = samples[index]
-                    let magnitude = abs(sample)
-                    sum += sample * sample
-                    peak = max(peak, magnitude)
-                }
-            }
-        case .pcmFormatInt16:
-            guard let channelData = buffer.int16ChannelData else {
-                return WaveformInputMetrics(rms: 0, peak: 0, sampleDuration: 0.05)
-            }
-            let scale = Float(Int16.max)
-            for channel in 0..<channelCount {
-                let samples = channelData[channel]
-                for index in 0..<count {
-                    let sample = Float(samples[index]) / scale
-                    let magnitude = abs(sample)
-                    sum += sample * sample
-                    peak = max(peak, magnitude)
-                }
-            }
-        default:
-            return WaveformInputMetrics(rms: 0, peak: 0, sampleDuration: 0.05)
-        }
-
-        let totalSamples = Float(count * channelCount)
-        let rms = sqrt(sum / totalSamples)
-        let sampleDuration = Float(Double(buffer.frameLength) / buffer.format.sampleRate)
-
-        return WaveformInputMetrics(
-            rms: rms,
-            peak: peak,
-            sampleDuration: sampleDuration
-        )
     }
 }

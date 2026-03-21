@@ -9,21 +9,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyService = HotkeyService()
     private let audioCapture = AudioCaptureService()
     private let clipboard = ClipboardService()
+    private let openRouterService = OpenRouterService()
     private lazy var textInsertion = TextInsertionService(clipboard: clipboard)
 
     private var overlayController: OverlayWindowController?
+    private var settingsWindowController: SettingsWindowController?
     private var menuBarController: MenuBarController?
     private var sttSession: STTSessionService?
 
     private var elapsedTimer: Timer?
     private var startedAt: Date?
     private var isTransitioning = false
-    private var audioStopTask: Task<Void, Never>?
     private var lastTranscript = ""
     private var targetApplication: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        configureApplicationMenu()
 
         overlayController = OverlayWindowController(state: appState)
         overlayController?.onStop = { [weak self] in
@@ -31,9 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.toggleRecording()
             }
         }
-        overlayController?.onCopyAndStop = { [weak self] in
+        overlayController?.onCopy = { [weak self] in
             Task { @MainActor [weak self] in
-                self?.copyCurrentAndStop()
+                self?.copyCurrentTranscript()
             }
         }
         menuBarController = MenuBarController(settings: settings)
@@ -45,6 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController?.onCopyLastTranscript = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.copyLastTranscript()
+            }
+        }
+        menuBarController?.onOpenSettings = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.openSettingsFlow()
             }
         }
         menuBarController?.onOpenAccessibilitySettings = { [weak self] in
@@ -75,8 +82,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        audioStopTask?.cancel()
-        audioStopTask = nil
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         audioCapture.stop()
@@ -96,21 +101,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func copyLastTranscript() {
-        let trimmed = lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return
-        }
-        clipboard.setString(trimmed)
+        copyTranscript(lastTranscript)
     }
 
-    private func copyCurrentAndStop() {
-        // Copy current transcript to clipboard
-        let trimmed = lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            clipboard.setString(trimmed)
-        }
-        // Then stop recording
-        toggleRecording()
+    private func copyCurrentTranscript() {
+        copyTranscript(lastTranscript)
     }
 
     private func startRecordingFlow() async {
@@ -124,11 +119,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             targetApplication = NSWorkspace.shared.frontmostApplication
             try await permissions.ensureMicrophonePermission()
             lastTranscript = ""
+            appState.aiCleanupEnabled = settings.aiCleanupEnabledByDefault
             appState.setTranscriptPreview(fullText: "")
 
-            let session = STTSessionService()
-            session.onSnapshot = { [weak self] snapshot in
-                guard let self else {
+            let session = STTSessionService(settings: settings)
+            session.onSnapshot = { [weak self, weak session] snapshot in
+                guard
+                    let self,
+                    let session,
+                    let currentSession = self.sttSession,
+                    currentSession === session
+                else {
                     return
                 }
                 self.lastTranscript = snapshot.combinedText
@@ -165,40 +166,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let targetApp = self.targetApplication
         let shouldAutoPaste = settings.autoPaste
         let shouldRestoreClipboard = settings.restoreClipboard
-        let transcript = lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let clipboardSnapshot = (!transcript.isEmpty && shouldAutoPaste && shouldRestoreClipboard) ? clipboard.snapshot() : nil
+        let shouldRunAICleanup = appState.aiCleanupEnabled
+        let clipboardSnapshot = shouldAutoPaste && shouldRestoreClipboard ? clipboard.snapshot() : nil
 
         appState.setPhase(.finalizing)
         menuBarController?.updateStatusTitle(for: .finalizing)
         elapsedTimer?.invalidate()
         elapsedTimer = nil
-        self.lastTranscript = transcript
-        self.appState.setTranscriptPreview(fullText: transcript)
-        self.overlayController?.hide()
-        self.sttSession = nil
-        self.targetApplication = nil
+        startedAt = nil
+        let finalChunk = audioCapture.stop()
+        if !finalChunk.isEmpty {
+            sttSession.sendAudioChunk(finalChunk)
+        }
         isTransitioning = false
 
-        if !transcript.isEmpty {
-            clipboard.setString(transcript)
-        }
+        do {
+            let finalizedTranscript = try await sttSession.finishAndWait()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let currentSession = self.sttSession, currentSession === sttSession else {
+                return
+            }
 
-        self.appState.setPhase(.idle)
-        self.appState.setElapsed(seconds: 0)
-        self.menuBarController?.updateStatusTitle(for: .idle)
+            var transcriptToDeliver = finalizedTranscript
 
-        if !transcript.isEmpty && shouldAutoPaste {
-            let targetApp = targetApp
-            let clipboardSnapshot = clipboardSnapshot
-            Task { @MainActor [weak self] in
-                guard let self else {
-                    return
+            if shouldRunAICleanup && !finalizedTranscript.isEmpty && settings.hasOpenRouterCleanupConfiguration {
+                self.appState.setPhase(.inserting)
+                self.menuBarController?.updateStatusTitle(for: .inserting)
+                self.appState.setTranscriptPreview(fullText: finalizedTranscript)
+
+                do {
+                    let cleanedTranscript = try await openRouterService.cleanupTranscript(
+                        apiKey: settings.openRouterAPIKey,
+                        model: settings.openRouterModel,
+                        rewriteInstruction: settings.openRouterCleanupPrompt,
+                        rawTranscript: finalizedTranscript
+                    ).trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    guard let currentSession = self.sttSession, currentSession === sttSession else {
+                        return
+                    }
+
+                    if !cleanedTranscript.isEmpty {
+                        transcriptToDeliver = cleanedTranscript
+                    }
+                } catch {
+                    print("OpenRouter cleanup skipped: \(error.localizedDescription)")
+
+                    guard let currentSession = self.sttSession, currentSession === sttSession else {
+                        return
+                    }
                 }
-                guard self.permissions.hasAccessibilityPermission(prompt: false) else {
-                    return
-                }
+            }
 
-                self.textInsertion.pasteClipboardContents(into: targetApp)
+            self.lastTranscript = transcriptToDeliver
+            self.appState.setTranscriptPreview(fullText: transcriptToDeliver)
+            self.overlayController?.hide()
+
+            if !transcriptToDeliver.isEmpty {
+                clipboard.setString(transcriptToDeliver)
+            }
+
+            if !transcriptToDeliver.isEmpty && shouldAutoPaste && permissions.hasAccessibilityPermission(prompt: false) {
+                textInsertion.pasteClipboardContents(into: targetApp)
 
                 if let clipboardSnapshot {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
@@ -206,14 +235,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             }
-        }
 
-        audioStopTask?.cancel()
-        audioStopTask = Task.detached(priority: .userInitiated) { [audioCapture] in
-            audioCapture.stop()
-        }
+            sttSession.cancel()
+            self.sttSession = nil
+            self.targetApplication = nil
+            self.appState.setPhase(.idle)
+            self.appState.setElapsed(seconds: 0)
+            self.menuBarController?.updateStatusTitle(for: .idle)
+        } catch is CancellationError {
+            guard let currentSession = self.sttSession, currentSession === sttSession else {
+                return
+            }
 
-        sttSession.cancel()
+            sttSession.cancel()
+            self.sttSession = nil
+            self.targetApplication = nil
+            self.overlayController?.hide()
+            self.appState.setPhase(.idle)
+            self.appState.setElapsed(seconds: 0)
+            self.menuBarController?.updateStatusTitle(for: .idle)
+        } catch {
+            guard let currentSession = self.sttSession, currentSession === sttSession else {
+                return
+            }
+
+            sttSession.cancel()
+            self.sttSession = nil
+            self.targetApplication = nil
+            self.overlayController?.hide()
+            handleError(error.localizedDescription)
+        }
     }
 
     private func startElapsedTimer() {
@@ -230,10 +281,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func forceResetToIdle() {
         isTransitioning = false  // Critical: reset this flag so new recordings can start
-        audioStopTask?.cancel()
-        audioStopTask = nil
         elapsedTimer?.invalidate()
         elapsedTimer = nil
+        startedAt = nil
         audioCapture.stop()
         sttSession?.cancel()
         sttSession = nil
@@ -244,9 +294,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController?.updateStatusTitle(for: .idle)
     }
 
+    private func copyTranscript(_ transcript: String) {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        clipboard.setString(trimmed)
+    }
+
     private func openAccessibilitySettingsFlow() {
         _ = permissions.hasAccessibilityPermission(prompt: true)
         permissions.openAccessibilitySettings()
+    }
+
+    private func openSettingsFlow() {
+        if settingsWindowController == nil {
+            settingsWindowController = SettingsWindowController(settings: settings)
+        }
+
+        settingsWindowController?.show()
+    }
+
+    private func configureApplicationMenu() {
+        let mainMenu = NSMenu()
+
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(
+            withTitle: "About SuperSamuel",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Hide SuperSamuel",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"
+        )
+        appMenu.addItem(
+            withTitle: "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h"
+        ).keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(
+            withTitle: "Show All",
+            action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Quit SuperSamuel",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(
+            withTitle: "Undo",
+            action: Selector(("undo:")),
+            keyEquivalent: "z"
+        )
+        editMenu.addItem(
+            withTitle: "Redo",
+            action: Selector(("redo:")),
+            keyEquivalent: "Z"
+        )
+        editMenu.addItem(.separator())
+        editMenu.addItem(
+            withTitle: "Cut",
+            action: #selector(NSText.cut(_:)),
+            keyEquivalent: "x"
+        )
+        editMenu.addItem(
+            withTitle: "Copy",
+            action: #selector(NSText.copy(_:)),
+            keyEquivalent: "c"
+        )
+        editMenu.addItem(
+            withTitle: "Paste",
+            action: #selector(NSText.paste(_:)),
+            keyEquivalent: "v"
+        )
+        editMenu.addItem(
+            withTitle: "Select All",
+            action: #selector(NSText.selectAll(_:)),
+            keyEquivalent: "a"
+        )
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        NSApp.mainMenu = mainMenu
     }
 
     private func handleError(_ message: String) {

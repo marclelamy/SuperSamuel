@@ -29,23 +29,24 @@ private struct STTResponse: Decodable {
 
 @MainActor
 final class STTSessionService {
-    private let settings: SettingsStore
     private let tokenService: TokenService
     private let urlSession: URLSession
     private let decoder = JSONDecoder()
     private let assembler = TranscriptAssembler()
+    private let model: String
 
     private var socketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
-    private var pendingSendTask: Task<Void, Never>?
     private var hasFinished = false
     private var terminalError: Error?
 
-    var onSnapshot: ((TranscriptSnapshot) -> Void)?
-
-    init(settings: SettingsStore, tokenService: TokenService = TokenService(), urlSession: URLSession = .shared) {
-        self.settings = settings
+    init(
+        tokenService: TokenService,
+        model: String,
+        urlSession: URLSession = .shared
+    ) {
         self.tokenService = tokenService
+        self.model = model
         self.urlSession = urlSession
     }
 
@@ -55,33 +56,19 @@ final class STTSessionService {
     }
 
     func start() async throws {
-        hasFinished = false
-        terminalError = nil
-        pendingSendTask = nil
-
         let token = try await fetchToken()
         let wsURL = URL(string: "wss://api.sinusoidlabs.com/v1/stt/stream")!
         let socket = urlSession.webSocketTask(with: wsURL)
         socketTask = socket
         socket.resume()
 
-        var firstPayload: [String: Any] = [
+        let firstPayload: [String: Any] = [
             "token": token,
-            "model": "spark",
+            "model": model,
             "audio_format": "pcm_s16le",
             "sample_rate": 16_000,
             "num_channels": 1
         ]
-
-        let context = settings.transcriptionContext.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !context.isEmpty {
-            firstPayload["context"] = context
-        }
-
-        let vocabTerms = settings.customVocabularyTerms
-        if !vocabTerms.isEmpty {
-            firstPayload["vocab"] = vocabTerms
-        }
 
         let data = try JSONSerialization.data(withJSONObject: firstPayload, options: [])
         guard let json = String(data: data, encoding: .utf8) else {
@@ -93,22 +80,38 @@ final class STTSessionService {
     }
 
     func sendAudioChunk(_ data: Data) {
-        guard !data.isEmpty else {
+        guard let socketTask else {
             return
         }
 
-        enqueueSend(.data(data))
+        Task { [weak self] in
+            do {
+                try await socketTask.send(.data(data))
+            } catch {
+                await MainActor.run {
+                    self?.markTerminalError(error)
+                }
+            }
+        }
     }
 
-    func finishAndWait() async throws -> String {
+    func finishAndWait(timeoutMs: Int) async throws -> String {
         guard let socketTask else {
             throw STTSessionError.notStarted
         }
 
-        try await waitForPendingSend()
-        try await socketTask.send(.string(""))
+        Task { [weak self] in
+            do {
+                try await socketTask.send(.string(""))
+            } catch {
+                await MainActor.run {
+                    self?.markTerminalError(error)
+                }
+            }
+        }
 
-        while true {
+        let deadline = Date().addingTimeInterval(Double(max(timeoutMs, 300)) / 1000)
+        while Date() < deadline {
             if let terminalError {
                 throw terminalError
             }
@@ -117,17 +120,13 @@ final class STTSessionService {
                 return assembler.currentCombined().trimmingCharacters(in: .whitespacesAndNewlines)
             }
 
-            try Task.checkCancellation()
             try await Task.sleep(nanoseconds: 100_000_000)
         }
+
+        return assembler.currentCombined().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func cancel() {
-        pendingSendTask?.cancel()
-        pendingSendTask = nil
-        if !hasFinished && terminalError == nil {
-            terminalError = CancellationError()
-        }
         receiveTask?.cancel()
         receiveTask = nil
         socketTask?.cancel(with: .normalClosure, reason: nil)
@@ -136,7 +135,7 @@ final class STTSessionService {
 
     private func fetchToken() async throws -> String {
         do {
-            return try await tokenService.fetchToken(apiKeyOverride: settings.apiKey)
+            return try await tokenService.fetchToken()
         } catch let error as TokenServiceError {
             throw STTSessionError.tokenError(error.localizedDescription)
         } catch {
@@ -158,28 +157,6 @@ final class STTSessionService {
                 }
             } catch {
                 self.markTerminalError(error)
-            }
-        }
-    }
-
-    private func enqueueSend(_ message: URLSessionWebSocketTask.Message) {
-        guard let socketTask else {
-            return
-        }
-
-        let previousSendTask = pendingSendTask
-        pendingSendTask = Task { [weak self] in
-            _ = await previousSendTask?.result
-            guard !Task.isCancelled else {
-                return
-            }
-
-            do {
-                try await socketTask.send(message)
-            } catch {
-                await MainActor.run {
-                    self?.markTerminalError(error)
-                }
             }
         }
     }
@@ -207,8 +184,6 @@ final class STTSessionService {
             finished: response.finished ?? false
         )
 
-        onSnapshot?(snapshot)
-
         if snapshot.finished {
             hasFinished = true
         }
@@ -217,13 +192,6 @@ final class STTSessionService {
     private func markTerminalError(_ error: Error) {
         if terminalError == nil {
             terminalError = error
-        }
-    }
-
-    private func waitForPendingSend() async throws {
-        _ = await pendingSendTask?.result
-        if let terminalError {
-            throw terminalError
         }
     }
 }

@@ -3,7 +3,7 @@ import SwiftUI
 struct RecordingOverlayView: View {
     @ObservedObject var state: AppState
     var onStop: (() -> Void)?
-    var onCopyAndStop: (() -> Void)?
+    var onCopy: (() -> Void)?
 
     private let cardShape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     private let panelWidth: CGFloat = 430
@@ -26,11 +26,11 @@ struct RecordingOverlayView: View {
 
                 controlButton(
                     symbol: "doc.on.doc",
-                    action: onCopyAndStop,
+                    action: onCopy,
                     foreground: .primary,
                     accent: nil,
                     prominent: false,
-                    help: "Copy transcript and stop"
+                    help: "Copy transcript"
                 )
 
                 controlButton(
@@ -39,7 +39,7 @@ struct RecordingOverlayView: View {
                     foreground: .white,
                     accent: .red,
                     prominent: true,
-                    help: "Stop recording"
+                    help: stopHelpText
                 )
             }
 
@@ -56,6 +56,38 @@ struct RecordingOverlayView: View {
 
             WaveformView(samples: state.waveformSamples, color: statusColor)
                 .frame(height: 40)
+
+            HStack(alignment: .center, spacing: 10) {
+                Toggle(isOn: $state.aiCleanupEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI cleanup")
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+
+                        Text(cleanupDetailText)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .disabled(!canEditCleanupToggle)
+
+                Spacer(minLength: 8)
+
+                Text(state.aiCleanupEnabled ? "On" : "Off")
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(state.aiCleanupEnabled ? Color.green.opacity(0.92) : Color.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(Array(previewLines.enumerated()), id: \.offset) { index, line in
@@ -125,7 +157,7 @@ struct RecordingOverlayView: View {
         case .finalizing:
             return "Finalizing"
         case .inserting:
-            return "Inserting"
+            return "AI Cleanup"
         case .done:
             return "Done"
         case .error:
@@ -140,13 +172,47 @@ struct RecordingOverlayView: View {
         case .finalizing:
             return .blue
         case .inserting:
-            return .green
+            return .purple
         case .error:
             return .orange
         case .done:
             return .green
         case .idle:
             return .secondary
+        }
+    }
+
+    private var canEditCleanupToggle: Bool {
+        state.phase == .recording
+    }
+
+    private var cleanupDetailText: String {
+        switch state.phase {
+        case .recording:
+            return state.aiCleanupEnabled
+                ? "Will rewrite the final transcript before paste."
+                : "Will use the raw finalized transcript."
+        case .finalizing:
+            return "Locked while waiting for the final transcript."
+        case .inserting:
+            return "Cleaning the finalized transcript with AI."
+        case .done:
+            return state.aiCleanupEnabled ? "Cleanup stayed enabled for this recording." : "Cleanup stayed disabled for this recording."
+        case .idle, .error:
+            return state.aiCleanupEnabled ? "Enabled for the next recording." : "Disabled for the next recording."
+        }
+    }
+
+    private var stopHelpText: String {
+        switch state.phase {
+        case .recording:
+            return "Stop recording"
+        case .finalizing:
+            return "Cancel finalizing"
+        case .inserting:
+            return "Cancel AI cleanup"
+        case .idle, .done, .error:
+            return "Stop recording"
         }
     }
 

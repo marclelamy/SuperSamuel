@@ -8,7 +8,7 @@ enum TokenServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingAPIKey:
-            return "API key not found. Add it in Settings, create ~/.supersamuel/api_key, or set SUPERSAMUEL_API_KEY."
+            return "SinusoidLabs API key not found."
         case .requestFailed(let message):
             return "Token request failed: \(message)"
         case .invalidResponse:
@@ -32,44 +32,20 @@ actor TokenService {
     private let tokenURL = URL(string: "https://api.sinusoidlabs.com/v1/stt/token")!
     private let urlSession: URLSession
     private let maxRetries = 3
+    private let apiKey: String
 
-    init(urlSession: URLSession = .shared) {
+    init(apiKey: String, urlSession: URLSession = .shared) {
+        self.apiKey = apiKey
         self.urlSession = urlSession
     }
 
-    func fetchToken(apiKeyOverride: String? = nil) async throws -> String {
-        let apiKey = try loadAPIKey(apiKeyOverride: apiKeyOverride)
-        return try await requestToken(apiKey: apiKey)
-    }
-
-    private func loadAPIKey(apiKeyOverride: String?) throws -> String {
-        if let apiKeyOverride {
-            let trimmed = apiKeyOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                return trimmed
-            }
+    func fetchToken() async throws -> String {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw TokenServiceError.missingAPIKey
         }
 
-        // Try ~/.supersamuel/api_key first
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        let configPath = homeDir.appendingPathComponent(".supersamuel/api_key")
-
-        if let key = try? String(contentsOf: configPath, encoding: .utf8) {
-            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                return trimmed
-            }
-        }
-
-        // Fallback: try environment variable
-        if let key = ProcessInfo.processInfo.environment["SUPERSAMUEL_API_KEY"] {
-            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                return trimmed
-            }
-        }
-
-        throw TokenServiceError.missingAPIKey
+        return try await requestToken(apiKey: trimmed)
     }
 
     private func requestToken(apiKey: String) async throws -> String {
@@ -87,7 +63,6 @@ actor TokenService {
                 throw TokenServiceError.invalidResponse
             }
 
-            // Handle rate limiting with exponential backoff
             if http.statusCode == 429 && attempt < maxRetries {
                 let backoffMs = 1000 * Int(pow(2.0, Double(attempt)))
                 attempt += 1
@@ -102,7 +77,6 @@ actor TokenService {
             }
 
             let tokenResponse = try JSONDecoder().decode(TokenResponse.self, from: data)
-
             if tokenResponse.token.isEmpty {
                 throw TokenServiceError.invalidResponse
             }
