@@ -7,6 +7,8 @@ final class OverlayWindowController {
     private var panel: NSPanel?
     var onStop: (() -> Void)?
     var onCopy: (() -> Void)?
+    var onAttachScreenshot: (() -> Void)?
+    var onClearScreenshot: (() -> Void)?
 
     init(state: AppState) {
         self.state = state
@@ -30,7 +32,7 @@ final class OverlayWindowController {
         }
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 430, height: 212),
+            contentRect: NSRect(x: 0, y: 0, width: 430, height: 318),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
@@ -52,8 +54,14 @@ final class OverlayWindowController {
     }
 
     private func updatePanelContent(_ panel: NSPanel) {
-        panel.setContentSize(NSSize(width: 430, height: 212))
-        let contentView = RecordingOverlayView(state: state, onStop: onStop, onCopy: onCopy)
+        panel.setContentSize(NSSize(width: 430, height: 318))
+        let contentView = RecordingOverlayView(
+            state: state,
+            onStop: onStop,
+            onCopy: onCopy,
+            onAttachScreenshot: onAttachScreenshot,
+            onClearScreenshot: onClearScreenshot
+        )
         let host = NSHostingView(rootView: contentView)
         host.frame = panel.contentView?.bounds ?? .zero
         host.autoresizingMask = [.width, .height]

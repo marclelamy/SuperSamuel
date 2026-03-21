@@ -18,6 +18,9 @@ final class AppState: ObservableObject {
     @Published var transcriptPreviewLines: [String] = ["Press Option+Space to start dictation."]
     @Published var statusText: String = "Idle"
     @Published var aiCleanupEnabled = true
+    @Published var attachedScreenshot: AttachedScreenshot?
+    @Published var screenshotStatusMessage: String?
+    @Published var isCapturingScreenshot = false
 
     private let maxWaveSamples = 96
 
@@ -72,6 +75,9 @@ final class AppState: ObservableObject {
         setElapsed(seconds: 0)
         waveformSamples = Array(repeating: 0, count: maxWaveSamples)
         transcriptPreviewLines = ["Listening..."]
+        attachedScreenshot = nil
+        screenshotStatusMessage = nil
+        isCapturingScreenshot = false
     }
 
     private func wrappedPreviewLines(from text: String, maxCharsPerLine: Int) -> [String] {

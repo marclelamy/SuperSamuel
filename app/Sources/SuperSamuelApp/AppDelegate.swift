@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let audioCapture = AudioCaptureService()
     private let clipboard = ClipboardService()
     private let openRouterService = OpenRouterService()
+    private let screenshotCapture = ScreenshotCaptureService()
     private lazy var textInsertion = TextInsertionService(clipboard: clipboard)
 
     private var overlayController: OverlayWindowController?
@@ -36,6 +37,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayController?.onCopy = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.copyCurrentTranscript()
+            }
+        }
+        overlayController?.onAttachScreenshot = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.captureScreenshotFlow()
+            }
+        }
+        overlayController?.onClearScreenshot = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.clearAttachedScreenshot()
             }
         }
         menuBarController = MenuBarController(settings: settings)
@@ -87,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         audioCapture.stop()
         sttSession?.cancel()
         hotkeyService.stop()
+        clearAttachedScreenshot()
     }
 
     private func toggleRecording() {
@@ -118,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             targetApplication = NSWorkspace.shared.frontmostApplication
             try await permissions.ensureMicrophonePermission()
+            clearAttachedScreenshot()
             lastTranscript = ""
             appState.aiCleanupEnabled = settings.aiCleanupEnabledByDefault
             appState.setTranscriptPreview(fullText: "")
@@ -167,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let shouldAutoPaste = settings.autoPaste
         let shouldRestoreClipboard = settings.restoreClipboard
         let shouldRunAICleanup = appState.aiCleanupEnabled
+        let attachedScreenshotURL = appState.attachedScreenshot?.fileURL
         let clipboardSnapshot = shouldAutoPaste && shouldRestoreClipboard ? clipboard.snapshot() : nil
 
         appState.setPhase(.finalizing)
@@ -195,11 +209,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.appState.setTranscriptPreview(fullText: finalizedTranscript)
 
                 do {
-                    let cleanedTranscript = try await openRouterService.cleanupTranscript(
-                        apiKey: settings.openRouterAPIKey,
-                        model: settings.openRouterModel,
-                        rewriteInstruction: settings.openRouterCleanupPrompt,
-                        rawTranscript: finalizedTranscript
+                    let cleanedTranscript = try await cleanupTranscript(
+                        finalizedTranscript,
+                        screenshotURL: attachedScreenshotURL
                     ).trimmingCharacters(in: .whitespacesAndNewlines)
 
                     guard let currentSession = self.sttSession, currentSession === sttSession else {
@@ -221,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.lastTranscript = transcriptToDeliver
             self.appState.setTranscriptPreview(fullText: transcriptToDeliver)
             self.overlayController?.hide()
+            self.clearAttachedScreenshot()
 
             if !transcriptToDeliver.isEmpty {
                 clipboard.setString(transcriptToDeliver)
@@ -251,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.sttSession = nil
             self.targetApplication = nil
             self.overlayController?.hide()
+            self.clearAttachedScreenshot()
             self.appState.setPhase(.idle)
             self.appState.setElapsed(seconds: 0)
             self.menuBarController?.updateStatusTitle(for: .idle)
@@ -263,6 +277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.sttSession = nil
             self.targetApplication = nil
             self.overlayController?.hide()
+            self.clearAttachedScreenshot()
             handleError(error.localizedDescription)
         }
     }
@@ -288,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sttSession?.cancel()
         sttSession = nil
         targetApplication = nil
+        clearAttachedScreenshot()
         overlayController?.hide()
         appState.setPhase(.idle)
         appState.setElapsed(seconds: 0)
@@ -389,11 +405,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
     }
 
+    private func captureScreenshotFlow() {
+        guard appState.phase == .recording, !appState.isCapturingScreenshot else {
+            return
+        }
+
+        appState.isCapturingScreenshot = true
+        appState.screenshotStatusMessage = nil
+
+        defer {
+            appState.isCapturingScreenshot = false
+        }
+
+        do {
+            try permissions.ensureScreenRecordingPermission(prompt: true)
+        } catch {
+            appState.screenshotStatusMessage = "\(error.localizedDescription) Enable it in System Settings, then retake."
+            return
+        }
+
+        let currentProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+        let candidates = [NSWorkspace.shared.frontmostApplication, targetApplication]
+            .compactMap { $0 }
+            .filter { $0.processIdentifier != currentProcessIdentifier }
+            .reduce(into: [NSRunningApplication]()) { partialResult, application in
+                if !partialResult.contains(where: { $0.processIdentifier == application.processIdentifier }) {
+                    partialResult.append(application)
+                }
+            }
+
+        var lastError: Error?
+
+        for application in candidates {
+            do {
+                let attachment = try screenshotCapture.captureWindow(for: application)
+                let previousAttachment = appState.attachedScreenshot
+                appState.attachedScreenshot = attachment
+                appState.screenshotStatusMessage = nil
+                screenshotCapture.remove(previousAttachment)
+                return
+            } catch {
+                lastError = error
+            }
+        }
+
+        appState.screenshotStatusMessage = lastError?.localizedDescription ?? "Couldn't attach a screenshot."
+    }
+
+    private func clearAttachedScreenshot() {
+        screenshotCapture.remove(appState.attachedScreenshot)
+        appState.attachedScreenshot = nil
+        appState.screenshotStatusMessage = nil
+        appState.isCapturingScreenshot = false
+    }
+
+    private func cleanupTranscript(_ transcript: String, screenshotURL: URL?) async throws -> String {
+        do {
+            return try await openRouterService.cleanupTranscript(
+                apiKey: settings.openRouterAPIKey,
+                model: settings.openRouterModel,
+                rewriteInstruction: settings.openRouterCleanupPrompt,
+                rawTranscript: transcript,
+                screenshotURL: screenshotURL
+            )
+        } catch {
+            guard screenshotURL != nil else {
+                throw error
+            }
+
+            print("OpenRouter cleanup with screenshot failed, retrying without image: \(error.localizedDescription)")
+            return try await openRouterService.cleanupTranscript(
+                apiKey: settings.openRouterAPIKey,
+                model: settings.openRouterModel,
+                rewriteInstruction: settings.openRouterCleanupPrompt,
+                rawTranscript: transcript,
+                screenshotURL: nil
+            )
+        }
+    }
+
     private func handleError(_ message: String) {
         appState.setPhase(.error(message))
         menuBarController?.updateStatusTitle(for: .error(message))
         overlayController?.show()
         targetApplication = nil
+        clearAttachedScreenshot()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             Task { @MainActor [weak self] in

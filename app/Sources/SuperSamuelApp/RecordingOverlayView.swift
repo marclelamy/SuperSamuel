@@ -4,6 +4,8 @@ struct RecordingOverlayView: View {
     @ObservedObject var state: AppState
     var onStop: (() -> Void)?
     var onCopy: (() -> Void)?
+    var onAttachScreenshot: (() -> Void)?
+    var onClearScreenshot: (() -> Void)?
 
     private let cardShape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     private let panelWidth: CGFloat = 430
@@ -89,6 +91,8 @@ struct RecordingOverlayView: View {
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             )
 
+            screenshotSection
+
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(Array(previewLines.enumerated()), id: \.offset) { index, line in
                     let isLastLine = index == previewLines.count - 1
@@ -109,6 +113,104 @@ struct RecordingOverlayView: View {
         .overlay { cardOverlay }
         .shadow(color: .black.opacity(0.28), radius: 10, y: 4)
         .environment(\.colorScheme, .dark)
+    }
+
+    private var screenshotSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Screenshot context")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(screenshotDetailText)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                if state.attachedScreenshot == nil {
+                    pillButton(
+                        title: state.isCapturingScreenshot ? "Capturing..." : "Attach",
+                        symbol: "camera",
+                        accent: .blue,
+                        action: onAttachScreenshot,
+                        disabled: !canEditScreenshot || state.isCapturingScreenshot
+                    )
+                } else {
+                    HStack(spacing: 8) {
+                        pillButton(
+                            title: state.isCapturingScreenshot ? "Capturing..." : "Retake",
+                            symbol: "camera.rotate",
+                            accent: .blue,
+                            action: onAttachScreenshot,
+                            disabled: !canEditScreenshot || state.isCapturingScreenshot
+                        )
+
+                        pillButton(
+                            title: "Clear",
+                            symbol: "xmark",
+                            accent: .white,
+                            action: onClearScreenshot,
+                            disabled: !canEditScreenshot || state.isCapturingScreenshot
+                        )
+                    }
+                }
+            }
+
+            if let attachment = state.attachedScreenshot {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(nsImage: attachment.previewImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 118, height: 72)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Attached window")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+
+                        Text(attachment.sourceDescription)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+
+                        Text(state.aiCleanupEnabled
+                            ? "Will be sent with the final transcript."
+                            : "Kept locally unless AI cleanup stays on.")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(state.aiCleanupEnabled ? Color.blue.opacity(0.9) : .secondary)
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+            }
+
+            if let message = state.screenshotStatusMessage, !message.isEmpty {
+                Text(message)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Color.orange.opacity(0.92))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
     }
 
     private var previewLines: [String] {
@@ -146,6 +248,39 @@ struct RecordingOverlayView: View {
         .clipShape(Circle())
         .help(help)
         .accessibilityLabel(help)
+    }
+
+    private func pillButton(
+        title: String,
+        symbol: String,
+        accent: Color,
+        action: (() -> Void)?,
+        disabled: Bool
+    ) -> some View {
+        Button(action: { action?() }) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 10.5, weight: .semibold))
+
+                Text(title)
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(disabled ? Color.secondary : .primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+        }
+        .buttonStyle(.plain)
+        .background {
+            Capsule(style: .continuous)
+                .fill(accent.opacity(disabled ? 0.08 : 0.16))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(disabled ? 0.08 : 0.12), lineWidth: 1)
+                }
+        }
+        .opacity(disabled ? 0.72 : 1)
+        .disabled(disabled)
     }
 
     private var statusLabel: String {
@@ -186,6 +321,10 @@ struct RecordingOverlayView: View {
         state.phase == .recording
     }
 
+    private var canEditScreenshot: Bool {
+        state.phase == .recording
+    }
+
     private var cleanupDetailText: String {
         switch state.phase {
         case .recording:
@@ -200,6 +339,28 @@ struct RecordingOverlayView: View {
             return state.aiCleanupEnabled ? "Cleanup stayed enabled for this recording." : "Cleanup stayed disabled for this recording."
         case .idle, .error:
             return state.aiCleanupEnabled ? "Enabled for the next recording." : "Disabled for the next recording."
+        }
+    }
+
+    private var screenshotDetailText: String {
+        switch state.phase {
+        case .recording:
+            if state.attachedScreenshot != nil {
+                return "Optional window context for cleanup. Locked when finalization starts."
+            }
+            return "Optional. Capture the current app window for extra cleanup context."
+        case .finalizing:
+            return "Locked while waiting for the final transcript."
+        case .inserting:
+            return state.attachedScreenshot != nil
+                ? "Using the attached window as extra cleanup context."
+                : "No screenshot was attached for this cleanup pass."
+        case .done:
+            return state.attachedScreenshot != nil
+                ? "A screenshot was attached for that recording."
+                : "No screenshot was attached for that recording."
+        case .idle, .error:
+            return "Available when the next recording starts."
         }
     }
 

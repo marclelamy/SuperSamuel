@@ -13,6 +13,7 @@ enum AccessibilityPermissionState {
 enum PermissionError: LocalizedError {
     case microphoneDenied
     case accessibilityDenied
+    case screenRecordingDenied
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +21,8 @@ enum PermissionError: LocalizedError {
             return "Microphone permission is required."
         case .accessibilityDenied:
             return "Accessibility permission is required for automatic paste."
+        case .screenRecordingDenied:
+            return "Screen Recording permission is required to attach a screenshot."
         }
     }
 }
@@ -47,6 +50,13 @@ final class PermissionsService {
         let trusted = hasAccessibilityPermission(prompt: prompt)
         if !trusted {
             throw PermissionError.accessibilityDenied
+        }
+    }
+
+    func ensureScreenRecordingPermission(prompt: Bool) throws {
+        let granted = hasScreenRecordingPermission(prompt: prompt)
+        if !granted {
+            throw PermissionError.screenRecordingDenied
         }
     }
 
@@ -82,10 +92,29 @@ final class PermissionsService {
         return AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 
+    func hasScreenRecordingPermission(prompt: Bool) -> Bool {
+        if CGPreflightScreenCaptureAccess() {
+            return true
+        }
+
+        guard prompt else {
+            return false
+        }
+
+        return CGRequestScreenCaptureAccess()
+    }
+
     func openAccessibilitySettings() {
         openPrivacySettings([
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility"
+        ])
+    }
+
+    func openScreenRecordingSettings() {
+        openPrivacySettings([
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture"
         ])
     }
 

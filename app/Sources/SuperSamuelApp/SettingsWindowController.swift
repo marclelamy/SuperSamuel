@@ -127,7 +127,7 @@ private struct SettingsView: View {
                         Text("Cleanup Model")
                             .font(.system(size: 13, weight: .semibold))
 
-                        Text("The picker fetches models from OpenRouter when opened. Search matches the full JSON payload for each model, not just the name.")
+                        Text("The picker fetches models from OpenRouter when opened. Search matches the full JSON payload for each model, not just the name. Prefer models marked Image if you want attached screenshots to be sent to cleanup.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
 
@@ -380,7 +380,7 @@ private struct OpenRouterModelPickerView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
-                Text("\(store.filteredModels.count) models")
+                Text("\(store.filteredModels.count) models • \(store.filteredModels.filter(\.supportsImageInput).count) image-capable")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
 
@@ -390,10 +390,24 @@ private struct OpenRouterModelPickerView: View {
                             Button(action: { onSelect(model) }) {
                                 HStack(alignment: .top, spacing: 10) {
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(model.displayName)
-                                            .font(.system(size: 12.5, weight: .semibold))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
+                                        HStack(alignment: .center, spacing: 6) {
+                                            Text(model.displayName)
+                                                .font(.system(size: 12.5, weight: .semibold))
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+
+                                            if model.supportsImageInput {
+                                                Text("Image")
+                                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                                                    .foregroundStyle(Color.blue.opacity(0.94))
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 3)
+                                                    .background(
+                                                        Capsule(style: .continuous)
+                                                            .fill(Color.blue.opacity(0.12))
+                                                    )
+                                            }
+                                        }
 
                                         Text(model.id)
                                             .font(.system(size: 11, design: .monospaced))

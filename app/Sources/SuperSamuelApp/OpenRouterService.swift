@@ -5,6 +5,7 @@ struct OpenRouterModelSummary: Identifiable, Equatable {
     let displayName: String
     let description: String
     let searchableText: String
+    let supportsImageInput: Bool
 }
 
 enum OpenRouterServiceError: LocalizedError {
@@ -60,12 +61,14 @@ actor OpenRouterService {
             let name = (dictionary["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let description = (dictionary["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let searchableText = buildSearchableText(from: rawModel, fallback: [id, name, description].joined(separator: "\n"))
+            let supportsImageInput = supportsImageInput(from: dictionary)
 
             return OpenRouterModelSummary(
                 id: id,
                 displayName: name.isEmpty ? id : name,
                 description: description,
-                searchableText: searchableText
+                searchableText: searchableText,
+                supportsImageInput: supportsImageInput
             )
         }
 
@@ -83,7 +86,8 @@ actor OpenRouterService {
         apiKey: String,
         model: String,
         rewriteInstruction: String,
-        rawTranscript: String
+        rawTranscript: String,
+        screenshotURL: URL? = nil
     ) async throws -> String {
         let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedAPIKey.isEmpty else {
@@ -112,19 +116,19 @@ actor OpenRouterService {
                     Treat the raw transcript as the source of truth, but rewrite it into natural, readable sentence-by-sentence dictation.
                     Remove filler words and speech artifacts such as "um", "uh", "like" when used as filler, "you know", repeated words, false starts, self-corrections, stutters, and obvious recognition noise.
                     Preserve all concrete meaning, technical details, intent, uncertainty, and important qualifiers.
+                    If a screenshot is attached, use it only as supporting context for app names, labels, UI text, filenames, or technical terms that help disambiguate the transcript.
+                    Never let the screenshot override the transcript when they conflict.
                     Do not summarize, shorten for brevity, add new facts, answer the transcript, or change the meaning.
                     Return only the cleaned transcript.
                     """
                 ],
                 [
                     "role": "user",
-                    "content": """
-                    Raw transcript to rewrite:
-                    \(trimmedTranscript)
-
-                    Rewrite rules:
-                    \(rewriteInstruction)
-                    """
+                    "content": try buildUserMessageContent(
+                        transcript: trimmedTranscript,
+                        rewriteInstruction: rewriteInstruction,
+                        screenshotURL: screenshotURL
+                    )
                 ]
             ]
         ]
@@ -210,5 +214,80 @@ actor OpenRouterService {
         }
 
         return text.localizedLowercase
+    }
+
+    private func buildUserMessageContent(
+        transcript: String,
+        rewriteInstruction: String,
+        screenshotURL: URL?
+    ) throws -> Any {
+        let textContent = """
+        Raw transcript to rewrite:
+        \(transcript)
+
+        Rewrite rules:
+        \(rewriteInstruction)
+        """
+
+        guard let screenshotURL else {
+            return textContent
+        }
+
+        return [
+            [
+                "type": "text",
+                "text": """
+                \(textContent)
+
+                Attached image:
+                Use the screenshot only as additional context for visible app labels, filenames, UI text, or technical terms. If anything in the screenshot conflicts with the transcript, trust the transcript.
+                """
+            ],
+            [
+                "type": "image_url",
+                "image_url": [
+                    "url": try buildImageDataURL(from: screenshotURL)
+                ]
+            ]
+        ]
+    }
+
+    private func buildImageDataURL(from fileURL: URL) throws -> String {
+        do {
+            let data = try Data(contentsOf: fileURL)
+            return "data:image/jpeg;base64,\(data.base64EncodedString())"
+        } catch {
+            throw OpenRouterServiceError.requestFailed("Attached screenshot couldn't be read.")
+        }
+    }
+
+    private func supportsImageInput(from dictionary: [String: Any]) -> Bool {
+        if let architecture = dictionary["architecture"] as? [String: Any] {
+            if let inputModalities = architecture["input_modalities"] as? [String],
+               inputModalities.contains(where: { $0.localizedCaseInsensitiveContains("image") })
+            {
+                return true
+            }
+
+            if let modality = architecture["modality"] as? String,
+               modality.localizedCaseInsensitiveContains("image")
+            {
+                return true
+            }
+        }
+
+        if let modalities = dictionary["modalities"] as? [String],
+           modalities.contains(where: { $0.localizedCaseInsensitiveContains("image") })
+        {
+            return true
+        }
+
+        if let inputModalities = dictionary["input_modalities"] as? [String],
+           inputModalities.contains(where: { $0.localizedCaseInsensitiveContains("image") })
+        {
+            return true
+        }
+
+        return false
     }
 }
