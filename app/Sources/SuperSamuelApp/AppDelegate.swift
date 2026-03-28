@@ -175,8 +175,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Capture target app before any async work
-        let targetApp = self.targetApplication
+        // Capture the app that is active when recording stops, before async work changes focus.
+        let targetApp = currentPasteTarget()
+        self.targetApplication = targetApp
         let shouldAutoPaste = settings.autoPaste
         let shouldRestoreClipboard = settings.restoreClipboard
         let shouldRunAICleanup = appState.aiCleanupEnabled
@@ -308,6 +309,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.setPhase(.idle)
         appState.setElapsed(seconds: 0)
         menuBarController?.updateStatusTitle(for: .idle)
+    }
+
+    private func currentPasteTarget() -> NSRunningApplication? {
+        let currentProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+
+        if let frontmostApplication = NSWorkspace.shared.frontmostApplication,
+           frontmostApplication.processIdentifier != currentProcessIdentifier
+        {
+            return frontmostApplication
+        }
+
+        if let targetApplication,
+           targetApplication.processIdentifier != currentProcessIdentifier
+        {
+            return targetApplication
+        }
+
+        return nil
     }
 
     private func copyTranscript(_ transcript: String) {

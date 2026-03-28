@@ -49,34 +49,11 @@ xcode-select --install
 3. Build, install, sign, and launch the app from the repo root:
 
    ```bash
-   #!/usr/bin/env bash
-   set -euo pipefail
-
-   REPO_ROOT="$(pwd)"
-   APP_DIR="$REPO_ROOT/app"
-   APP_NAME="SuperSamuel"
-
-   SRC_APP="$APP_DIR/$APP_NAME.app"
-   BUILD_BIN="$APP_DIR/.build/debug/$APP_NAME"
-   INSTALLED_APP="$HOME/Applications/$APP_NAME.app"
-
-   mkdir -p "$HOME/Applications"
-
-   cd "$APP_DIR"
-   swift build
-
-   cp -f "$BUILD_BIN" "$SRC_APP/Contents/MacOS/$APP_NAME"
-
-   codesign --force --deep --sign - \
-     --identifier com.supersamuel.app \
-     -r='designated => identifier "com.supersamuel.app"' \
-     "$SRC_APP"
-
-   rm -rf "$INSTALLED_APP"
-   ditto "$SRC_APP" "$INSTALLED_APP"
-
-   open "$INSTALLED_APP"
+   ./rebuild-app.sh
    ```
+
+   This rebuilds the Swift app, refreshes `~/Applications/SuperSamuel.app`, quits any
+   running copy, and launches the new build.
 
 4. Grant macOS permissions on first launch:
 
@@ -93,6 +70,9 @@ If you just want to run the executable directly during development:
 cd app
 swift run
 ```
+
+That does not replace the installed app in `~/Applications`. To rebuild the installed app,
+run `./rebuild-app.sh` from the repo root.
 
 ## API Key Loading
 
