@@ -1,7 +1,0 @@
-.gitignore
-.vscode/**
-package-lock.json
-native-helper/**
-app/**
-broker/**
-trash.ipynb
