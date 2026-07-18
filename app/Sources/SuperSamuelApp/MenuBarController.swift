@@ -2,27 +2,75 @@ import AppKit
 import Foundation
 
 @MainActor
-final class MenuBarController: NSObject {
+final class MenuBarController: NSObject, NSMenuDelegate {
     var onToggleRecording: (() -> Void)?
     var onCopyLastTranscript: (() -> Void)?
     var onOpenSettings: (() -> Void)?
     var onOpenAccessibilitySettings: (() -> Void)?
-    var onSettingsChanged: (() -> Void)?
+    var onMenuWillOpen: (() -> Void)?
+    var onSendPendingRecording: ((UUID) -> Void)?
+    var onDeletePendingRecording: ((UUID) -> Void)?
+    var onRevealPendingRecording: ((UUID) -> Void)?
+    var onCopyHistoryTranscript: ((UUID) -> Void)?
+    var onClearTranscriptHistory: (() -> Void)?
 
     private let statusItem: NSStatusItem
     private let settings: SettingsStore
 
-    private let toggleRecordingItem = NSMenuItem(title: "Start Recording (Option+Space)", action: nil, keyEquivalent: "")
-    private let copyItem = NSMenuItem(title: "Copy Last Transcript", action: nil, keyEquivalent: "")
-    private let autoPasteItem = NSMenuItem(title: "Auto Paste Result", action: nil, keyEquivalent: "")
-    private let restoreClipboardItem = NSMenuItem(title: "Restore Clipboard", action: nil, keyEquivalent: "")
-    private let openSettingsItem = NSMenuItem(title: "Settings...", action: nil, keyEquivalent: ",")
-    private let openAccessibilityItem = NSMenuItem(title: "Open Accessibility Settings", action: nil, keyEquivalent: "")
-    private let quitItem = NSMenuItem(title: "Quit SuperSamuel", action: nil, keyEquivalent: "q")
+    private let toggleRecordingItem = NSMenuItem(
+        title: "Start Recording (Option+Space)",
+        action: nil,
+        keyEquivalent: ""
+    )
+    private let pendingRecordingsItem = NSMenuItem(
+        title: "Unsent Recordings",
+        action: nil,
+        keyEquivalent: ""
+    )
+    private let copyItem = NSMenuItem(
+        title: "Copy Last Transcript",
+        action: nil,
+        keyEquivalent: ""
+    )
+    private let historyItem = NSMenuItem(
+        title: "Transcript History",
+        action: nil,
+        keyEquivalent: ""
+    )
+    private let autoPasteItem = NSMenuItem(
+        title: "Auto Paste Result",
+        action: nil,
+        keyEquivalent: ""
+    )
+    private let restoreClipboardItem = NSMenuItem(
+        title: "Restore Clipboard",
+        action: nil,
+        keyEquivalent: ""
+    )
+    private let openSettingsItem = NSMenuItem(
+        title: "Settings...",
+        action: nil,
+        keyEquivalent: ","
+    )
+    private let openAccessibilityItem = NSMenuItem(
+        title: "Open Accessibility Settings",
+        action: nil,
+        keyEquivalent: ""
+    )
+    private let quitItem = NSMenuItem(
+        title: "Quit SuperSamuel",
+        action: nil,
+        keyEquivalent: "q"
+    )
+
+    private var pendingRecordings: [PendingRecordingSummary] = []
+    private var transcriptHistory: [TranscriptHistoryItem] = []
 
     init(settings: SettingsStore) {
         self.settings = settings
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.statusItem = NSStatusBar.system.statusItem(
+            withLength: NSStatusItem.variableLength
+        )
         super.init()
         configureMenu()
         updateStatusTitle(for: .idle)
@@ -40,23 +88,36 @@ final class MenuBarController: NSObject {
         case .recording:
             button.title = "SS REC"
             toggleRecordingItem.title = "Stop Recording (Option+Space)"
-        case .finalizing:
+        case .transcribing:
             button.title = "SS ..."
-            toggleRecordingItem.title = "Cancel Finalizing (Option+Space)"
-        case .inserting:
+            toggleRecordingItem.title = "Cancel Transcription (Option+Space)"
+        case .cleaning:
             button.title = "SS AI"
             toggleRecordingItem.title = "Cancel AI Cleanup (Option+Space)"
-        case .done:
-            button.title = "SS"
-            toggleRecordingItem.title = "Start Recording (Option+Space)"
-        case .error(_):
+        case .error:
             button.title = "SS ERR"
             toggleRecordingItem.title = "Start Recording (Option+Space)"
         }
     }
 
+    func updatePendingRecordings(_ recordings: [PendingRecordingSummary]) {
+        pendingRecordings = recordings
+        rebuildPendingRecordingsMenu()
+    }
+
+    func updateTranscriptHistory(_ history: [TranscriptHistoryItem]) {
+        transcriptHistory = history
+        rebuildTranscriptHistoryMenu()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        onMenuWillOpen?()
+        refreshCheckmarks()
+    }
+
     private func configureMenu() {
         let menu = NSMenu()
+        menu.delegate = self
 
         toggleRecordingItem.target = self
         toggleRecordingItem.action = #selector(handleToggleRecording)
@@ -80,7 +141,9 @@ final class MenuBarController: NSObject {
         quitItem.action = #selector(handleQuit)
 
         menu.addItem(toggleRecordingItem)
+        menu.addItem(pendingRecordingsItem)
         menu.addItem(copyItem)
+        menu.addItem(historyItem)
         menu.addItem(.separator())
         menu.addItem(autoPasteItem)
         menu.addItem(restoreClipboardItem)
@@ -92,12 +155,139 @@ final class MenuBarController: NSObject {
 
         statusItem.menu = menu
         refreshCheckmarks()
+        rebuildPendingRecordingsMenu()
+        rebuildTranscriptHistoryMenu()
+    }
+
+    private func rebuildPendingRecordingsMenu() {
+        pendingRecordingsItem.isHidden = pendingRecordings.isEmpty
+        pendingRecordingsItem.title =
+            "Unsent Recordings (\(pendingRecordings.count))"
+
+        let menu = NSMenu()
+        for recording in pendingRecordings {
+            let recordingItem = NSMenuItem(
+                title: pendingRecordingTitle(recording),
+                action: nil,
+                keyEquivalent: ""
+            )
+            let actions = NSMenu()
+
+            if let error = recording.lastError, !error.isEmpty {
+                let errorItem = NSMenuItem(
+                    title: shortened(error, maximumLength: 80),
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                errorItem.isEnabled = false
+                actions.addItem(errorItem)
+                actions.addItem(.separator())
+            }
+
+            let sendItem = NSMenuItem(
+                title: "Send Recording",
+                action: #selector(handleSendPendingRecording(_:)),
+                keyEquivalent: ""
+            )
+            sendItem.target = self
+            sendItem.representedObject = recording.id.uuidString
+            actions.addItem(sendItem)
+
+            let revealItem = NSMenuItem(
+                title: "Reveal in Finder",
+                action: #selector(handleRevealPendingRecording(_:)),
+                keyEquivalent: ""
+            )
+            revealItem.target = self
+            revealItem.representedObject = recording.id.uuidString
+            actions.addItem(revealItem)
+
+            let deleteItem = NSMenuItem(
+                title: "Delete Recording...",
+                action: #selector(handleDeletePendingRecording(_:)),
+                keyEquivalent: ""
+            )
+            deleteItem.target = self
+            deleteItem.representedObject = recording.id.uuidString
+            actions.addItem(deleteItem)
+
+            recordingItem.submenu = actions
+            menu.addItem(recordingItem)
+        }
+
+        pendingRecordingsItem.submenu = menu
+    }
+
+    private func rebuildTranscriptHistoryMenu() {
+        let menu = NSMenu()
+
+        if transcriptHistory.isEmpty {
+            let emptyItem = NSMenuItem(
+                title: "No saved transcripts",
+                action: nil,
+                keyEquivalent: ""
+            )
+            emptyItem.isEnabled = false
+            menu.addItem(emptyItem)
+        } else {
+            for transcript in transcriptHistory {
+                let item = NSMenuItem(
+                    title: transcriptTitle(transcript),
+                    action: #selector(handleCopyHistoryTranscript(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = transcript.id.uuidString
+                item.toolTip = transcript.text
+                menu.addItem(item)
+            }
+
+            menu.addItem(.separator())
+            let clearItem = NSMenuItem(
+                title: "Clear Transcript History...",
+                action: #selector(handleClearTranscriptHistory),
+                keyEquivalent: ""
+            )
+            clearItem.target = self
+            menu.addItem(clearItem)
+        }
+
+        historyItem.submenu = menu
     }
 
     private func refreshCheckmarks() {
         autoPasteItem.state = settings.autoPaste ? .on : .off
         restoreClipboardItem.state = settings.restoreClipboard ? .on : .off
         restoreClipboardItem.isEnabled = settings.autoPaste
+    }
+
+    private func pendingRecordingTitle(
+        _ recording: PendingRecordingSummary
+    ) -> String {
+        let date = Self.dateFormatter.string(from: recording.createdAt)
+        let duration = Self.durationFormatter.string(
+            from: recording.estimatedDuration
+        ) ?? "0:00"
+        let size = ByteCountFormatter.string(
+            fromByteCount: recording.sizeBytes,
+            countStyle: .file
+        )
+        return "\(date) • \(duration) • \(recording.chunkCount) parts • \(size)"
+    }
+
+    private func transcriptTitle(_ transcript: TranscriptHistoryItem) -> String {
+        let date = Self.dateFormatter.string(from: transcript.createdAt)
+        let singleLine = transcript.text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(date) — \(shortened(singleLine, maximumLength: 70))"
+    }
+
+    private func shortened(_ text: String, maximumLength: Int) -> String {
+        guard text.count > maximumLength else {
+            return text
+        }
+        return String(text.prefix(maximumLength - 1)) + "…"
     }
 
     @objc
@@ -114,14 +304,12 @@ final class MenuBarController: NSObject {
     private func handleToggleAutoPaste() {
         settings.autoPaste.toggle()
         refreshCheckmarks()
-        onSettingsChanged?()
     }
 
     @objc
     private func handleToggleRestoreClipboard() {
         settings.restoreClipboard.toggle()
         refreshCheckmarks()
-        onSettingsChanged?()
     }
 
     @objc
@@ -135,7 +323,71 @@ final class MenuBarController: NSObject {
     }
 
     @objc
+    private func handleSendPendingRecording(_ sender: NSMenuItem) {
+        guard
+            let rawID = sender.representedObject as? String,
+            let id = UUID(uuidString: rawID)
+        else {
+            return
+        }
+        onSendPendingRecording?(id)
+    }
+
+    @objc
+    private func handleDeletePendingRecording(_ sender: NSMenuItem) {
+        guard
+            let rawID = sender.representedObject as? String,
+            let id = UUID(uuidString: rawID)
+        else {
+            return
+        }
+        onDeletePendingRecording?(id)
+    }
+
+    @objc
+    private func handleRevealPendingRecording(_ sender: NSMenuItem) {
+        guard
+            let rawID = sender.representedObject as? String,
+            let id = UUID(uuidString: rawID)
+        else {
+            return
+        }
+        onRevealPendingRecording?(id)
+    }
+
+    @objc
+    private func handleCopyHistoryTranscript(_ sender: NSMenuItem) {
+        guard
+            let rawID = sender.representedObject as? String,
+            let id = UUID(uuidString: rawID)
+        else {
+            return
+        }
+        onCopyHistoryTranscript?(id)
+    }
+
+    @objc
+    private func handleClearTranscriptHistory() {
+        onClearTranscriptHistory?()
+    }
+
+    @objc
     private func handleQuit() {
         NSApp.terminate(nil)
     }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private static let durationFormatter: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute, .second]
+        formatter.unitsStyle = .positional
+        formatter.zeroFormattingBehavior = .pad
+        return formatter
+    }()
 }

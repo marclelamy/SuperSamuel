@@ -1,11 +1,6 @@
 import AppKit
 import Foundation
 
-enum TextInsertionResult {
-    case pastedFromClipboard
-    case copiedOnly
-}
-
 @MainActor
 final class TextInsertionService {
     private let clipboard: ClipboardService
@@ -19,14 +14,13 @@ final class TextInsertionService {
         targetApplication: NSRunningApplication?,
         autoPaste: Bool,
         restoreClipboard: Bool
-    ) -> TextInsertionResult {
+    ) {
         let snapshot = (autoPaste && restoreClipboard) ? clipboard.snapshot() : nil
 
-        // Step 1: Copy text to clipboard
         clipboard.setString(text)
 
         if !autoPaste {
-            return .copiedOnly
+            return
         }
 
         pasteClipboardContents(into: targetApplication)
@@ -37,7 +31,6 @@ final class TextInsertionService {
             }
         }
 
-        return .pastedFromClipboard
     }
 
     func pasteClipboardContents(into targetApplication: NSRunningApplication?) {

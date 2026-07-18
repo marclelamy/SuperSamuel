@@ -1,12 +1,3 @@
-.DS_Store
-.env
-
-broker/node_modules
-broker/.env
-.pnpm-store
-
-app/.build
-# Environment files
 .env
 .env.*
 !.env.example
@@ -14,6 +5,7 @@ app/.build
 
 # Swift Package Manager
 .build/
+app/*.app/
 .swiftpm/
 Packages/
 

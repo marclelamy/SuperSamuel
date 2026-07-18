@@ -1,99 +1,178 @@
 # SuperSamuel
 
-SuperSamuel is a personal macOS dictation app inspired by Superwhisper:
+SuperSamuel is a small native macOS dictation app:
 
-- Global `Option+Space` to start/stop recording
-- Center overlay with live waveform, timer, and recent transcript lines
-- Minimal floating overlay built with AppKit + SwiftUI
-- Real-time transcription via SinusoidLabs `spark`
-- Auto-paste into the active text field (with clipboard fallback)
+- Press `Option+Space` to start and stop recording.
+- Record locally as 16 kHz mono WAV audio.
+- Finalize recordings into small, durable chunks.
+- Transcribe once through OpenRouter with `openai/whisper-large-v3`.
+- Optionally clean the transcript with any OpenRouter model or preset.
+- Paste the result back into the app that was active while dictating.
+- Optionally attach a screenshot as context for a vision-capable cleanup model.
 
-## Project Layout
+There is no realtime websocket, token broker, or streaming transcript path.
 
-- `app/` - native macOS app (Swift + AppKit/SwiftUI)
-- `broker/` - older local token broker prototype; not required for the current app flow
+On macOS 26 and newer, the compact notification-style recording overlay and
+settings window use untinted native **clear Liquid Glass** across their full
+surface, with clear-glass controls. A subtle moving chromatic backdrop gives
+the untinted glass light to refract even above nearly black applications.
+SuperSamuel does not add a custom blur layer. Older macOS versions use a
+non-blurred, translucent fallback because native Liquid Glass is unavailable
+there.
 
 ## Requirements
 
-- macOS 13+
+- macOS 13 or newer
 - Xcode Command Line Tools
+- An OpenRouter API key with available credits
 
-Install them if needed:
+Install the command-line tools if needed:
 
 ```bash
 xcode-select --install
 ```
 
-## Quick Start
+## Build and install
 
-1. Clone the repo and enter it:
+From the repository root:
 
-   ```bash
-   git clone https://github.com/marclelamy/SuperSamuel.git
-   cd SuperSamuel
-   ```
+```bash
+./rebuild-app.sh
+```
 
-2. Save your SinusoidLabs API key:
+The script builds, signs, installs, and opens `~/Applications/SuperSamuel.app`.
+It uses an optimized release build by default. For a faster local rebuild:
 
-   ```bash
-   mkdir -p ~/.supersamuel
-   printf '%s\n' 'sk-slabs-...' > ~/.supersamuel/api_key
-   ```
+```bash
+BUILD_CONFIGURATION=debug ./rebuild-app.sh
+```
 
-   You can also use an environment variable instead:
-
-   ```bash
-   export SUPERSAMUEL_API_KEY='sk-slabs-...'
-   ```
-
-3. Build, install, sign, and launch the app from the repo root:
-
-   ```bash
-   ./rebuild-app.sh
-   ```
-
-   This rebuilds the Swift app, refreshes `~/Applications/SuperSamuel.app`, quits any
-   running copy, and launches the new build.
-
-4. Grant macOS permissions on first launch:
-
-   - Microphone
-   - Accessibility
-
-5. Use `Option+Space` to start and stop dictation.
-
-## Development Run
-
-If you just want to run the executable directly during development:
+For a development-only build:
 
 ```bash
 cd app
-swift run
+swift build
 ```
 
-That does not replace the installed app in `~/Applications`. To rebuild the installed app,
-run `./rebuild-app.sh` from the repo root.
+## Configure OpenRouter
 
-## API Key Loading
+1. Open the `SS` menu-bar item.
+2. Choose **Settings…**
+3. Enter your OpenRouter API key. It is stored in the macOS Keychain.
+4. Enter a cleanup model or preset.
 
-The app looks for credentials in this order:
+Examples:
 
-1. `~/.supersamuel/api_key`
-2. `SUPERSAMUEL_API_KEY`
+```text
+openai/gpt-5.4-nano
+@preset/my-dictation-cleanup
+```
 
-## Required macOS Permissions
+The transcription model is fixed to:
 
-- Microphone access
-- Accessibility access (for global hotkey capture and text insertion/paste)
+```text
+openai/whisper-large-v3
+```
 
-If Accessibility permission is missing, use the menu bar action `Open Accessibility Settings`.
+OpenRouter presets can control model selection, fallbacks, provider routing,
+system prompts, and generation parameters. SuperSamuel does not send a
+request-level temperature for cleanup, so a preset's temperature is preserved.
 
-## Notes
+## Permissions
 
-- Tokens are fetched directly from SinusoidLabs in the current app flow; the local broker is not needed.
-- Menu bar options include toggles for:
-  - Auto Paste Result
-  - Restore Clipboard
+SuperSamuel may request:
 
+- **Microphone** — required to record dictation.
+- **Accessibility** — required for automatic paste. Without it, the result is
+  still copied to the clipboard.
+- **Screen Recording** — required only when attaching screenshot context.
 
-Le truc de l'espace, il marche trop bien. Genre, en vrai, franchement, genre, il marche de ouf. Et aussi, parfois, il y a des petits bugs, parce que genre, si t'as pas le... si par exemple la tuile, t'as rien de focus,
+## Request flow
+
+```text
+record durable WAV chunks
+  → OpenRouter Whisper Large V3 transcription
+  → optional OpenRouter cleanup
+  → clipboard
+  → optional Command+V paste
+```
+
+The recording file and any attached screenshot are temporary and are removed
+only after the final transcript has been saved successfully.
+
+## Recording recovery
+
+Audio is stored under:
+
+```text
+~/Library/Application Support/SuperSamuel/Recordings/
+```
+
+Each recording has its own folder containing:
+
+- WAV chunks finalized at a pause after two minutes, or after five minutes maximum
+- A JSON manifest
+- Cached raw and cleaned transcript parts
+- The final transcript while processing completes
+- Optional screenshot context
+
+If transcription, cleanup, cancellation, or app shutdown interrupts processing,
+the recording remains in this folder. On the next launch, SuperSamuel presents
+the oldest unsent recording and offers:
+
+- **Send Recording**
+- **Keep for Later**
+- **Delete Recording**
+
+The menu-bar **Unsent Recordings** submenu also supports sending, revealing the
+folder in Finder, or deleting after confirmation. New recordings remain blocked
+while unsent recordings exist.
+
+Successfully processed text is stored under:
+
+```text
+~/Library/Application Support/SuperSamuel/Transcript History/
+```
+
+The **Transcript History** submenu shows recent transcript previews. Selecting
+one copies its full text. History remains until explicitly cleared.
+
+## Upload limits
+
+OpenRouter's speech-to-text multipart endpoint currently limits each direct file
+upload to **25 MB**. Its separate Files API has a **100 MB** limit, but that is
+not the endpoint used for transcription.
+
+SuperSamuel records 16 kHz mono, 16-bit WAV and rotates at the first short pause
+after two minutes, with a five-minute hard maximum. Each request is therefore
+normally about 4–10 MB, regardless of the total recording length. Completed
+chunk transcripts are cached, so retrying after a later failure does not
+retranscribe successful chunks. Silence-only chunks are marked and skipped, so
+an extended pause cannot block the spoken parts that follow it.
+
+Groq's direct API documents **25 MB on the free tier** and **100 MB on the
+developer tier**, while direct attachment uploads are still capped at 25 MB.
+Those Groq account limits do not replace OpenRouter's own request limit when
+calling through OpenRouter.
+
+Official references:
+
+- [OpenRouter speech-to-text](https://openrouter.ai/docs/guides/overview/multimodal/stt)
+- [OpenRouter transcription API](https://openrouter.ai/docs/api/api-reference/stt/create-transcription)
+- [OpenRouter presets](https://openrouter.ai/docs/guides/features/presets)
+- [Groq speech-to-text](https://console.groq.com/docs/speech-to-text)
+
+## Manual verification
+
+- Start and stop recording with `Option+Space`.
+- Confirm the waveform and timer update while recording.
+- Cancel during transcription and confirm nothing is pasted.
+- Confirm the cancelled recording appears under **Unsent Recordings**.
+- Relaunch with an unsent recording and test Send, Keep, Reveal, and Delete.
+- Test cleanup with a normal model ID and with `@preset/...`.
+- Test cleanup enabled and disabled.
+- Test automatic paste in Notes, a browser textarea, and a code editor.
+- Test clipboard restoration.
+- Test screenshot cleanup and fallback when the selected model cannot read images.
+- Quit during recording and confirm the saved recording appears after relaunch.
+- Confirm completed transcripts appear in **Transcript History**.

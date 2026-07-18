@@ -2,25 +2,15 @@ import AVFoundation
 import AppKit
 import ApplicationServices
 import Foundation
-import IOKit.hid
-
-enum AccessibilityPermissionState {
-    case granted
-    case denied
-    case notDetermined
-}
 
 enum PermissionError: LocalizedError {
     case microphoneDenied
-    case accessibilityDenied
     case screenRecordingDenied
 
     var errorDescription: String? {
         switch self {
         case .microphoneDenied:
             return "Microphone permission is required."
-        case .accessibilityDenied:
-            return "Accessibility permission is required for automatic paste."
         case .screenRecordingDenied:
             return "Screen Recording permission is required to attach a screenshot."
         }
@@ -46,32 +36,10 @@ final class PermissionsService {
         }
     }
 
-    func ensureAccessibilityPermission(prompt: Bool) throws {
-        let trusted = hasAccessibilityPermission(prompt: prompt)
-        if !trusted {
-            throw PermissionError.accessibilityDenied
-        }
-    }
-
     func ensureScreenRecordingPermission(prompt: Bool) throws {
         let granted = hasScreenRecordingPermission(prompt: prompt)
         if !granted {
             throw PermissionError.screenRecordingDenied
-        }
-    }
-
-    func accessibilityPermissionState() -> AccessibilityPermissionState {
-        if CGPreflightPostEventAccess() || AXIsProcessTrusted() {
-            return .granted
-        }
-
-        switch IOHIDCheckAccess(kIOHIDRequestTypePostEvent) {
-        case kIOHIDAccessTypeGranted:
-            return .granted
-        case kIOHIDAccessTypeDenied:
-            return .denied
-        default:
-            return .notDetermined
         }
     }
 
@@ -108,13 +76,6 @@ final class PermissionsService {
         openPrivacySettings([
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility"
-        ])
-    }
-
-    func openScreenRecordingSettings() {
-        openPrivacySettings([
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture"
         ])
     }
 

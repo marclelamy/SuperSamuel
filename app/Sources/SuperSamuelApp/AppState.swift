@@ -4,9 +4,8 @@ import SwiftUI
 enum DictationPhase: Equatable {
     case idle
     case recording
-    case finalizing
-    case inserting
-    case done
+    case transcribing
+    case cleaning
     case error(String)
 }
 
@@ -16,30 +15,16 @@ final class AppState: ObservableObject {
     @Published var elapsedSeconds: TimeInterval = 0
     @Published var waveformSamples: [CGFloat] = Array(repeating: 0, count: 96)
     @Published var transcriptPreviewLines: [String] = ["Press Option+Space to start dictation."]
-    @Published var statusText: String = "Idle"
     @Published var aiCleanupEnabled = true
     @Published var attachedScreenshot: AttachedScreenshot?
     @Published var screenshotStatusMessage: String?
     @Published var isCapturingScreenshot = false
+    @Published var showsRecoveryActions = false
 
     private let maxWaveSamples = 96
 
     func setPhase(_ phase: DictationPhase) {
         self.phase = phase
-        switch phase {
-        case .idle:
-            statusText = "Idle"
-        case .recording:
-            statusText = "Recording"
-        case .finalizing:
-            statusText = "Finalizing"
-        case .inserting:
-            statusText = "AI Cleanup"
-        case .done:
-            statusText = "Done"
-        case .error(let message):
-            statusText = "Error: \(message)"
-        }
     }
 
     func setElapsed(seconds: TimeInterval) {
@@ -57,7 +42,7 @@ final class AppState: ObservableObject {
     func setTranscriptPreview(fullText: String) {
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            transcriptPreviewLines = ["Listening..."]
+            transcriptPreviewLines = ["No speech was detected."]
             return
         }
 
@@ -70,14 +55,19 @@ final class AppState: ObservableObject {
         transcriptPreviewLines = Array(lines.suffix(3))
     }
 
+    func setProgressMessage(_ message: String) {
+        transcriptPreviewLines = [message]
+    }
+
     func resetForRecording() {
         setPhase(.recording)
         setElapsed(seconds: 0)
         waveformSamples = Array(repeating: 0, count: maxWaveSamples)
-        transcriptPreviewLines = ["Listening..."]
+        transcriptPreviewLines = ["Recording locally..."]
         attachedScreenshot = nil
         screenshotStatusMessage = nil
         isCapturingScreenshot = false
+        showsRecoveryActions = false
     }
 
     private func wrappedPreviewLines(from text: String, maxCharsPerLine: Int) -> [String] {

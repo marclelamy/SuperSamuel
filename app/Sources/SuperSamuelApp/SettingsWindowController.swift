@@ -12,7 +12,13 @@ final class SettingsWindowController {
 
     func show() {
         let window = ensureWindow()
-        updateWindowContent(window)
+        let host = NSHostingView(rootView: SettingsView(settings: settings))
+        host.wantsLayer = true
+        host.layer?.backgroundColor = NSColor.clear.cgColor
+        window.contentView = makeLiquidGlassHost(
+            content: host,
+            cornerRadius: 24
+        )
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
@@ -24,56 +30,61 @@ final class SettingsWindowController {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 650),
+            styleMask: [
+                .titled,
+                .closable,
+                .miniaturizable,
+                .fullSizeContentView
+            ],
             backing: .buffered,
             defer: false
         )
         window.title = "SuperSamuel Settings"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
+        window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.center()
-        window.setContentSize(NSSize(width: 720, height: 760))
-        updateWindowContent(window)
         self.window = window
         return window
-    }
-
-    private func updateWindowContent(_ window: NSWindow) {
-        let host = NSHostingView(rootView: SettingsView(settings: settings))
-        host.frame = NSRect(origin: .zero, size: window.contentLayoutRect.size)
-        host.autoresizingMask = [.width, .height]
-        window.contentView = host
     }
 }
 
 private struct SettingsView: View {
     private let settings: SettingsStore
 
-    @State private var apiKey: String
-    @State private var transcriptionContext: String
-    @State private var customVocabulary: String
     @State private var openRouterAPIKey: String
-    @State private var openRouterModel: String
-    @State private var openRouterCleanupPrompt: String
-    @State private var aiCleanupEnabledByDefault: Bool
-    @State private var isModelPickerPresented = false
-    @StateObject private var modelStore: OpenRouterModelPickerStore
+    @State private var cleanupModel: String
+    @State private var cleanupPrompt: String
+    @State private var cleanupEnabledByDefault: Bool
 
     init(settings: SettingsStore) {
         self.settings = settings
-        _apiKey = State(initialValue: settings.apiKey)
-        _transcriptionContext = State(initialValue: settings.transcriptionContext)
-        _customVocabulary = State(initialValue: settings.customVocabulary)
         _openRouterAPIKey = State(initialValue: settings.openRouterAPIKey)
-        _openRouterModel = State(initialValue: settings.openRouterModel)
-        _openRouterCleanupPrompt = State(initialValue: settings.openRouterCleanupPrompt)
-        _aiCleanupEnabledByDefault = State(initialValue: settings.aiCleanupEnabledByDefault)
-        _modelStore = StateObject(wrappedValue: OpenRouterModelPickerStore())
+        _cleanupModel = State(initialValue: settings.cleanupModel)
+        _cleanupPrompt = State(initialValue: settings.cleanupPrompt)
+        _cleanupEnabledByDefault = State(initialValue: settings.cleanupEnabledByDefault)
     }
 
+    @ViewBuilder
     var body: some View {
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: 0) {
+                settingsContent
+            }
+        } else {
+            settingsContent
+        }
+    }
+
+    private var settingsContent: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 20) {
                 Text("Settings")
                     .font(.system(size: 22, weight: .semibold))
 
@@ -82,195 +93,128 @@ private struct SettingsView: View {
                     .foregroundStyle(.secondary)
 
                 section(
-                    title: "Sinusoid API Key",
-                    description: "Used to create the temporary realtime STT token for transcription."
+                    title: "OpenRouter",
+                    description: "The same API key is used for Whisper transcription and optional transcript cleanup."
                 ) {
-                    TextField("sk-slabs-...", text: apiKeyBinding)
-                        .textFieldStyle(.roundedBorder)
+                    SecureField("sk-or-v1-...", text: apiKeyBinding)
+                        .textFieldStyle(.plain)
                         .font(.system(size: 12, design: .monospaced))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 9)
+                        .liquidGlassSurface(cornerRadius: 11)
+
+                    Text("Stored in your macOS Keychain.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
 
                 section(
-                    title: "Context",
-                    description: "Optional free-text context that biases transcription toward your topic or domain."
+                    title: "Transcription",
+                    description: "Recordings are captured locally as durable 16 kHz mono WAV chunks, then sent after you stop recording."
                 ) {
-                    multilineEditor(text: transcriptionContextBinding, minHeight: 110)
-                }
-
-                section(
-                    title: "Vocabulary",
-                    description: "Optional custom terms. Use commas or one term per line. Example: Vercel, Supabase, Next.js"
-                ) {
-                    multilineEditor(text: customVocabularyBinding, minHeight: 130)
+                    labeledValue(
+                        label: "Model",
+                        value: OpenRouterService.transcriptionModel
+                    )
                 }
 
                 section(
                     title: "AI Cleanup",
-                    description: "Optionally send the finalized transcript to OpenRouter, clean it up without changing the meaning, and insert the cleaned result instead of the raw transcript."
+                    description: "After transcription, optionally rewrite spoken dictation into clean text without changing its meaning."
                 ) {
-                    Toggle("Enable AI cleanup by default", isOn: aiCleanupEnabledByDefaultBinding)
+                    Toggle(
+                        "Enable cleanup by default",
+                        isOn: cleanupEnabledByDefaultBinding
+                    )
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("OpenRouter API Key")
+                        Text("Cleanup model or preset")
                             .font(.system(size: 13, weight: .semibold))
 
-                        Text("Used only for the optional post-processing cleanup step.")
+                        Text("Enter an OpenRouter model ID or a preset such as @preset/my-dictation-cleanup.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
 
-                        TextField("sk-or-v1-...", text: openRouterAPIKeyBinding)
-                            .textFieldStyle(.roundedBorder)
+                        TextField("@preset/my-dictation-cleanup", text: cleanupModelBinding)
+                            .textFieldStyle(.plain)
                             .font(.system(size: 12, design: .monospaced))
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 9)
+                            .liquidGlassSurface(cornerRadius: 11)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Cleanup Model")
-                            .font(.system(size: 13, weight: .semibold))
-
-                        Text("The picker fetches models from OpenRouter when opened. Search matches the full JSON payload for each model, not just the name. Prefer models marked Image if you want attached screenshots to be sent to cleanup.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-
-                        Button(action: { isModelPickerPresented = true }) {
-                            HStack(spacing: 10) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(selectedModelDisplayName)
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-
-                                    Text(openRouterModel)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-
-                                Spacer(minLength: 12)
-
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(Color(nsColor: .textBackgroundColor))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $isModelPickerPresented, arrowEdge: .bottom) {
-                            OpenRouterModelPickerView(
-                                store: modelStore,
-                                selectedModelID: openRouterModel,
-                                onSelect: { model in
-                                    openRouterModel = model.id
-                                    settings.openRouterModel = model.id
-                                    isModelPickerPresented = false
-                                }
-                            )
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .center, spacing: 12) {
-                            Text("Cleanup Prompt")
+                        HStack {
+                            Text("Cleanup instructions")
                                 .font(.system(size: 13, weight: .semibold))
 
-                            Spacer(minLength: 12)
+                            Spacer()
 
                             Button("Restore Default") {
-                                openRouterCleanupPrompt = OpenRouterService.defaultCleanupInstruction
-                                settings.openRouterCleanupPrompt = OpenRouterService.defaultCleanupInstruction
+                                cleanupPrompt = OpenRouterService.defaultCleanupInstruction
+                                settings.cleanupPrompt = OpenRouterService.defaultCleanupInstruction
                             }
-                            .disabled(openRouterCleanupPrompt == OpenRouterService.defaultCleanupInstruction)
+                            .liquidGlassButton(
+                                tint: Color.accentColor.opacity(0.78)
+                            )
+                            .disabled(cleanupPrompt == OpenRouterService.defaultCleanupInstruction)
                         }
 
-                        Text("Extra instructions for the cleanup model. The system still preserves meaning and returns only cleaned text.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-
-                        multilineEditor(text: openRouterCleanupPromptBinding, minHeight: 180)
+                        TextEditor(text: cleanupPromptBinding)
+                            .font(.system(size: 13))
+                            .scrollContentBackground(.hidden)
+                            .padding(8)
+                            .frame(minHeight: 170)
+                            .liquidGlassSurface(cornerRadius: 12)
                     }
                 }
             }
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.top, 44)
+            .padding(.bottom, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 720, minHeight: 760)
+        .frame(minWidth: 680, minHeight: 650)
     }
 
     private var apiKeyBinding: Binding<String> {
         Binding(
-            get: { apiKey },
-            set: { newValue in
-                apiKey = newValue
-                settings.apiKey = newValue
-            }
-        )
-    }
-
-    private var transcriptionContextBinding: Binding<String> {
-        Binding(
-            get: { transcriptionContext },
-            set: { newValue in
-                transcriptionContext = newValue
-                settings.transcriptionContext = newValue
-            }
-        )
-    }
-
-    private var customVocabularyBinding: Binding<String> {
-        Binding(
-            get: { customVocabulary },
-            set: { newValue in
-                customVocabulary = newValue
-                settings.customVocabulary = newValue
-            }
-        )
-    }
-
-    private var openRouterAPIKeyBinding: Binding<String> {
-        Binding(
             get: { openRouterAPIKey },
-            set: { newValue in
-                openRouterAPIKey = newValue
-                settings.openRouterAPIKey = newValue
+            set: { value in
+                openRouterAPIKey = value
+                settings.openRouterAPIKey = value
             }
         )
     }
 
-    private var openRouterCleanupPromptBinding: Binding<String> {
+    private var cleanupModelBinding: Binding<String> {
         Binding(
-            get: { openRouterCleanupPrompt },
-            set: { newValue in
-                openRouterCleanupPrompt = newValue
-                settings.openRouterCleanupPrompt = newValue
+            get: { cleanupModel },
+            set: { value in
+                cleanupModel = value
+                settings.cleanupModel = value
             }
         )
     }
 
-    private var aiCleanupEnabledByDefaultBinding: Binding<Bool> {
+    private var cleanupPromptBinding: Binding<String> {
         Binding(
-            get: { aiCleanupEnabledByDefault },
-            set: { newValue in
-                aiCleanupEnabledByDefault = newValue
-                settings.aiCleanupEnabledByDefault = newValue
+            get: { cleanupPrompt },
+            set: { value in
+                cleanupPrompt = value
+                settings.cleanupPrompt = value
             }
         )
     }
 
-    private var selectedModelDisplayName: String {
-        if let model = modelStore.models.first(where: { $0.id == openRouterModel }) {
-            return model.displayName
-        }
-
-        return openRouterModel
+    private var cleanupEnabledByDefaultBinding: Binding<Bool> {
+        Binding(
+            get: { cleanupEnabledByDefault },
+            set: { value in
+                cleanupEnabledByDefault = value
+                settings.cleanupEnabledByDefault = value
+            }
+        )
     }
 
     @ViewBuilder
@@ -279,7 +223,7 @@ private struct SettingsView: View {
         description: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 9) {
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
 
@@ -289,170 +233,23 @@ private struct SettingsView: View {
 
             content()
         }
+        .padding(14)
+        .liquidGlassSurface(cornerRadius: 18)
     }
 
-    private func multilineEditor(text: Binding<String>, minHeight: CGFloat) -> some View {
-        TextEditor(text: text)
-            .font(.system(size: 13))
-            .scrollContentBackground(.hidden)
-            .padding(8)
-            .frame(minHeight: minHeight)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(nsColor: .textBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
-            )
-    }
-}
+    private func labeledValue(label: String, value: String) -> some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
 
-@MainActor
-private final class OpenRouterModelPickerStore: ObservableObject {
-    @Published var models: [OpenRouterModelSummary] = []
-    @Published var searchText = ""
-    @Published var isLoading = false
-    @Published var errorMessage: String?
+            Spacer()
 
-    private let service = OpenRouterService()
-
-    var filteredModels: [OpenRouterModelSummary] {
-        let trimmedQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedQuery.isEmpty else {
-            return models
+            Text(value)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
         }
-
-        let loweredQuery = trimmedQuery.localizedLowercase
-        return models.filter { $0.searchableText.contains(loweredQuery) }
-    }
-
-    func refresh() async {
-        isLoading = true
-        errorMessage = nil
-        searchText = ""
-
-        do {
-            models = try await service.fetchModels()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-
-        isLoading = false
-    }
-}
-
-private struct OpenRouterModelPickerView: View {
-    @ObservedObject var store: OpenRouterModelPickerStore
-    let selectedModelID: String
-    let onSelect: (OpenRouterModelSummary) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Choose Cleanup Model")
-                .font(.system(size: 15, weight: .semibold))
-
-            TextField("Search by id, name, description, pricing, or any JSON field", text: $store.searchText)
-                .textFieldStyle(.roundedBorder)
-
-            if store.isLoading {
-                VStack(alignment: .leading, spacing: 10) {
-                    ProgressView()
-                    Text("Fetching models...")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            } else if let errorMessage = store.errorMessage {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Couldn't load models.")
-                        .font(.system(size: 13, weight: .semibold))
-
-                    Text(errorMessage)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-
-                    Button("Retry") {
-                        Task {
-                            await store.refresh()
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else {
-                Text("\(store.filteredModels.count) models • \(store.filteredModels.filter(\.supportsImageInput).count) image-capable")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(store.filteredModels) { model in
-                            Button(action: { onSelect(model) }) {
-                                HStack(alignment: .top, spacing: 10) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        HStack(alignment: .center, spacing: 6) {
-                                            Text(model.displayName)
-                                                .font(.system(size: 12.5, weight: .semibold))
-                                                .foregroundStyle(.primary)
-                                                .lineLimit(1)
-
-                                            if model.supportsImageInput {
-                                                Text("Image")
-                                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                                                    .foregroundStyle(Color.blue.opacity(0.94))
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 3)
-                                                    .background(
-                                                        Capsule(style: .continuous)
-                                                            .fill(Color.blue.opacity(0.12))
-                                                    )
-                                            }
-                                        }
-
-                                        Text(model.id)
-                                            .font(.system(size: 11, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-
-                                        if !model.description.isEmpty {
-                                            Text(model.description)
-                                                .font(.system(size: 11))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(2)
-                                        }
-                                    }
-
-                                    Spacer(minLength: 12)
-
-                                    if model.id == selectedModelID {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 14))
-                                            .foregroundStyle(Color.accentColor)
-                                    }
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(model.id == selectedModelID ? Color.accentColor.opacity(0.12) : Color(nsColor: .textBackgroundColor))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.bottom, 2)
-                }
-            }
-        }
-        .padding(16)
-        .frame(width: 540, height: 460)
-        .task {
-            await store.refresh()
-        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .liquidGlassSurface(cornerRadius: 11)
     }
 }
