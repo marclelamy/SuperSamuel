@@ -1,22 +1,20 @@
 import Foundation
 
-struct OpenRouterModelSummary: Identifiable, Equatable {
-    let id: String
-    let displayName: String
-    let description: String
-    let searchableText: String
-    let supportsImageInput: Bool
-}
-
 enum OpenRouterServiceError: LocalizedError {
     case missingAPIKey
+    case audioTooLarge
+    case noSpeechDetected
     case requestFailed(String)
     case invalidResponse
 
     var errorDescription: String? {
         switch self {
         case .missingAPIKey:
-            return "OpenRouter API key is missing."
+            return "Add your OpenRouter API key in Settings before recording."
+        case .audioTooLarge:
+            return "The recording exceeds OpenRouter's 25 MB direct transcription limit."
+        case .noSpeechDetected:
+            return "No speech was detected. The recording was kept so you can retry or delete it."
         case .requestFailed(let message):
             return "OpenRouter request failed: \(message)"
         case .invalidResponse:
@@ -26,60 +24,56 @@ enum OpenRouterServiceError: LocalizedError {
 }
 
 actor OpenRouterService {
-    static let defaultModel = "openai/gpt-5.4-nano"
+    static let transcriptionModel = "openai/whisper-large-v3"
+    static let defaultCleanupModel = "openai/gpt-5.4-nano"
     static let defaultCleanupInstruction =
         "Rewrite the raw transcript into clean written dictation while preserving all meaning and technical details. Remove filler words such as um, uh, like when used as filler, you know, repeated words, false starts, self-corrections, stutters, and speech artifacts. Keep the same intent, facts, uncertainty, and level of detail. Do not summarize, shorten for brevity, add new facts, or change any meaning. Return only the cleaned transcript."
 
+    private static let maximumMultipartAudioBytes = 25 * 1_024 * 1_024
+
+    private let transcriptionURL = URL(string: "https://openrouter.ai/api/v1/audio/transcriptions")!
     private let chatURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
-    private let modelsURL = URL(string: "https://openrouter.ai/api/v1/models")!
     private let urlSession: URLSession
 
     init(urlSession: URLSession = .shared) {
         self.urlSession = urlSession
     }
 
-    func fetchModels() async throws -> [OpenRouterModelSummary] {
-        let (data, response) = try await urlSession.data(from: modelsURL)
+    func transcribe(apiKey: String, audio: RecordedAudio) async throws -> String {
+        let apiKey = try validatedAPIKey(apiKey)
+        let audioData = try Data(contentsOf: audio.fileURL)
+        guard audioData.count <= Self.maximumMultipartAudioBytes else {
+            throw OpenRouterServiceError.audioTooLarge
+        }
+
+        let boundary = "SuperSamuel-\(UUID().uuidString)"
+        var request = URLRequest(url: transcriptionURL)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 120
+        request.httpBody = multipartBody(
+            boundary: boundary,
+            audioData: audioData,
+            audio: audio
+        )
+
+        let (data, response) = try await urlSession.data(for: request)
         try validate(response: response, data: data)
 
         guard
             let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let rawModels = payload["data"] as? [Any]
+            let text = payload["text"] as? String
         else {
             throw OpenRouterServiceError.invalidResponse
         }
 
-        let models = rawModels.compactMap { rawModel -> OpenRouterModelSummary? in
-            guard
-                let dictionary = rawModel as? [String: Any],
-                let id = dictionary["id"] as? String,
-                !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else {
-                return nil
-            }
-
-            let name = (dictionary["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let description = (dictionary["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let searchableText = buildSearchableText(from: rawModel, fallback: [id, name, description].joined(separator: "\n"))
-            let supportsImageInput = supportsImageInput(from: dictionary)
-
-            return OpenRouterModelSummary(
-                id: id,
-                displayName: name.isEmpty ? id : name,
-                description: description,
-                searchableText: searchableText,
-                supportsImageInput: supportsImageInput
-            )
+        let transcript = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else {
+            throw OpenRouterServiceError.noSpeechDetected
         }
 
-        return models.sorted {
-            let lhsName = $0.displayName.localizedLowercase
-            let rhsName = $1.displayName.localizedLowercase
-            if lhsName == rhsName {
-                return $0.id.localizedLowercase < $1.id.localizedLowercase
-            }
-            return lhsName < rhsName
-        }
+        return transcript
     }
 
     func cleanupTranscript(
@@ -89,59 +83,54 @@ actor OpenRouterService {
         rawTranscript: String,
         screenshotURL: URL? = nil
     ) async throws -> String {
-        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedAPIKey.isEmpty else {
-            throw OpenRouterServiceError.missingAPIKey
-        }
-
-        let trimmedTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTranscript.isEmpty else {
+        let apiKey = try validatedAPIKey(apiKey)
+        let transcript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else {
             throw OpenRouterServiceError.invalidResponse
         }
 
+        let selectedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         var request = URLRequest(url: chatURL)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 45
-
-        let payload: [String: Any] = [
-            "model": model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Self.defaultModel : model,
-            "temperature": 0,
-            "messages": [
-                [
-                    "role": "system",
-                    "content": """
-                    You convert messy spoken dictation into clean written text.
-                    Treat the raw transcript as the source of truth, but rewrite it into natural, readable sentence-by-sentence dictation.
-                    Remove filler words and speech artifacts such as "um", "uh", "like" when used as filler, "you know", repeated words, false starts, self-corrections, stutters, and obvious recognition noise.
-                    Preserve all concrete meaning, technical details, intent, uncertainty, and important qualifiers.
-                    If a screenshot is attached, use it only as supporting context for app names, labels, UI text, filenames, or technical terms that help disambiguate the transcript.
-                    Never let the screenshot override the transcript when they conflict.
-                    Do not summarize, shorten for brevity, add new facts, answer the transcript, or change the meaning.
-                    Return only the cleaned transcript.
-                    """
-                ],
-                [
-                    "role": "user",
-                    "content": try buildUserMessageContent(
-                        transcript: trimmedTranscript,
-                        rewriteInstruction: rewriteInstruction,
-                        screenshotURL: screenshotURL
-                    )
+        request.timeoutInterval = 60
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: [
+                "model": selectedModel.isEmpty ? Self.defaultCleanupModel : selectedModel,
+                "messages": [
+                    [
+                        "role": "system",
+                        "content": """
+                        You convert messy spoken dictation into clean written text.
+                        Treat the raw transcript as the source of truth and rewrite it into natural, readable dictation.
+                        Preserve all concrete meaning, technical details, intent, uncertainty, and important qualifiers.
+                        If a screenshot is attached, use it only to disambiguate visible app names, labels, UI text, filenames, or technical terms.
+                        Never let the screenshot override the transcript.
+                        Do not summarize, answer the transcript, add new facts, or change the meaning.
+                        Return only the cleaned transcript.
+                        """
+                    ],
+                    [
+                        "role": "user",
+                        "content": try buildUserMessageContent(
+                            transcript: transcript,
+                            rewriteInstruction: rewriteInstruction,
+                            screenshotURL: screenshotURL
+                        )
+                    ]
                 ]
-            ]
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
+            ],
+            options: []
+        )
 
         let (data, response) = try await urlSession.data(for: request)
         try validate(response: response, data: data)
 
         guard
-            let payloadObject = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let choices = payloadObject["choices"] as? [[String: Any]],
-            let firstChoice = choices.first,
-            let message = firstChoice["message"] as? [String: Any],
+            let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let choices = payload["choices"] as? [[String: Any]],
+            let message = choices.first?["message"] as? [String: Any],
             let content = message["content"]
         else {
             throw OpenRouterServiceError.invalidResponse
@@ -153,6 +142,31 @@ actor OpenRouterService {
         }
 
         return text
+    }
+
+    private func validatedAPIKey(_ apiKey: String) throws -> String {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw OpenRouterServiceError.missingAPIKey
+        }
+        return trimmed
+    }
+
+    private func multipartBody(
+        boundary: String,
+        audioData: Data,
+        audio: RecordedAudio
+    ) -> Data {
+        var body = Data()
+        body.appendFormField(name: "model", value: Self.transcriptionModel, boundary: boundary)
+        body.appendFormField(name: "response_format", value: "json", boundary: boundary)
+        body.appendFormField(name: "temperature", value: "0", boundary: boundary)
+        body.append("--\(boundary)\r\n")
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"recording.\(audio.format)\"\r\n")
+        body.append("Content-Type: \(audio.mimeType)\r\n\r\n")
+        body.append(audioData)
+        body.append("\r\n--\(boundary)--\r\n")
+        return body
     }
 
     private func validate(response: URLResponse, data: Data) throws {
@@ -191,29 +205,13 @@ actor OpenRouterService {
             return text
         }
 
-        if let parts = content as? [[String: Any]] {
-            return parts
-                .compactMap { part -> String? in
-                    if let text = part["text"] as? String {
-                        return text
-                    }
-                    return nil
-                }
-                .joined(separator: "\n")
+        guard let parts = content as? [[String: Any]] else {
+            return ""
         }
 
-        return ""
-    }
-
-    private func buildSearchableText(from rawModel: Any, fallback: String) -> String {
-        guard
-            let data = try? JSONSerialization.data(withJSONObject: rawModel, options: [.sortedKeys]),
-            let text = String(data: data, encoding: .utf8)
-        else {
-            return fallback.localizedLowercase
-        }
-
-        return text.localizedLowercase
+        return parts
+            .compactMap { $0["text"] as? String }
+            .joined(separator: "\n")
     }
 
     private func buildUserMessageContent(
@@ -239,55 +237,36 @@ actor OpenRouterService {
                 "text": """
                 \(textContent)
 
-                Attached image:
-                Use the screenshot only as additional context for visible app labels, filenames, UI text, or technical terms. If anything in the screenshot conflicts with the transcript, trust the transcript.
+                Use the attached screenshot only as supporting context. If it conflicts with the transcript, trust the transcript.
                 """
             ],
             [
                 "type": "image_url",
                 "image_url": [
-                    "url": try buildImageDataURL(from: screenshotURL)
+                    "url": try imageDataURL(from: screenshotURL)
                 ]
             ]
         ]
     }
 
-    private func buildImageDataURL(from fileURL: URL) throws -> String {
+    private func imageDataURL(from fileURL: URL) throws -> String {
         do {
             let data = try Data(contentsOf: fileURL)
             return "data:image/jpeg;base64,\(data.base64EncodedString())"
         } catch {
-            throw OpenRouterServiceError.requestFailed("Attached screenshot couldn't be read.")
+            throw OpenRouterServiceError.requestFailed("The attached screenshot could not be read.")
         }
     }
+}
 
-    private func supportsImageInput(from dictionary: [String: Any]) -> Bool {
-        if let architecture = dictionary["architecture"] as? [String: Any] {
-            if let inputModalities = architecture["input_modalities"] as? [String],
-               inputModalities.contains(where: { $0.localizedCaseInsensitiveContains("image") })
-            {
-                return true
-            }
+private extension Data {
+    mutating func append(_ string: String) {
+        append(Data(string.utf8))
+    }
 
-            if let modality = architecture["modality"] as? String,
-               modality.localizedCaseInsensitiveContains("image")
-            {
-                return true
-            }
-        }
-
-        if let modalities = dictionary["modalities"] as? [String],
-           modalities.contains(where: { $0.localizedCaseInsensitiveContains("image") })
-        {
-            return true
-        }
-
-        if let inputModalities = dictionary["input_modalities"] as? [String],
-           inputModalities.contains(where: { $0.localizedCaseInsensitiveContains("image") })
-        {
-            return true
-        }
-
-        return false
+    mutating func appendFormField(name: String, value: String, boundary: String) {
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
+        append("\(value)\r\n")
     }
 }

@@ -6,9 +6,10 @@ final class OverlayWindowController {
     private let state: AppState
     private var panel: NSPanel?
     var onStop: (() -> Void)?
-    var onCopy: (() -> Void)?
     var onAttachScreenshot: (() -> Void)?
     var onClearScreenshot: (() -> Void)?
+    var onRetry: (() -> Void)?
+    var onDelete: (() -> Void)?
 
     init(state: AppState) {
         self.state = state
@@ -32,7 +33,7 @@ final class OverlayWindowController {
         }
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 430, height: 318),
+            contentRect: NSRect(x: 0, y: 0, width: 376, height: 250),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
@@ -43,9 +44,9 @@ final class OverlayWindowController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = false
+        panel.hasShadow = true
         panel.ignoresMouseEvents = false
-        panel.isMovableByWindowBackground = true  // Allow dragging
+        panel.isMovableByWindowBackground = true
 
         updatePanelContent(panel)
 
@@ -54,18 +55,24 @@ final class OverlayWindowController {
     }
 
     private func updatePanelContent(_ panel: NSPanel) {
-        panel.setContentSize(NSSize(width: 430, height: 318))
+        panel.setContentSize(NSSize(width: 376, height: 250))
         let contentView = RecordingOverlayView(
             state: state,
             onStop: onStop,
-            onCopy: onCopy,
             onAttachScreenshot: onAttachScreenshot,
-            onClearScreenshot: onClearScreenshot
+            onClearScreenshot: onClearScreenshot,
+            onRetry: onRetry,
+            onDelete: onDelete
         )
         let host = NSHostingView(rootView: contentView)
+        host.wantsLayer = true
+        host.layer?.backgroundColor = NSColor.clear.cgColor
         host.frame = panel.contentView?.bounds ?? .zero
         host.autoresizingMask = [.width, .height]
-        panel.contentView = host
+        panel.contentView = makeLiquidGlassHost(
+            content: host,
+            cornerRadius: 22
+        )
     }
 
     private func center(_ panel: NSPanel) {

@@ -1,36 +1,59 @@
 import AVFoundation
 import Foundation
 
+struct RecordedAudio {
+    let fileURL: URL
+    let format: String
+    let mimeType: String
+}
+
 enum AudioCaptureError: LocalizedError {
+    case alreadyRecording
     case inputUnavailable
     case unsupportedFormat
+    case recordingFailed(String)
+    case emptyRecording
 
     var errorDescription: String? {
         switch self {
+        case .alreadyRecording:
+            return "An audio recording is already active."
         case .inputUnavailable:
             return "No audio input device is available."
         case .unsupportedFormat:
-            return "Unsupported microphone format."
+            return "The microphone format could not be converted for transcription."
+        case .recordingFailed(let message):
+            return "Audio recording failed: \(message)"
+        case .emptyRecording:
+            return "The recording did not contain any audio."
         }
     }
 }
 
 final class AudioCaptureService {
-    var onChunk: ((Data) -> Void)?
-    var onLevel: ((Float) -> Void)?
-
+    private let fileManager: FileManager
     private let engine = AVAudioEngine()
-    private let processingQueue = DispatchQueue(label: "supersamuel.audio.processing")
-    private var converter: AVAudioConverter?
-    private var targetFormat: AVAudioFormat?
-    private var chunkTimer: DispatchSourceTimer?
-    private var pendingBytes = Data()
-    private var isRunning = false
-    private var waveformModel = WaveformModel()
+    private let stateLock = NSLock()
 
-    func start() throws {
-        guard !isRunning else {
-            return
+    private var converter: AVAudioConverter?
+    private var outputFile: AVAudioFile?
+    private var outputURL: URL?
+    private var captureError: Error?
+    private var running = false
+    private var rawLevel: Float = 0
+    private var displayedLevel: Float = 0
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+    }
+
+    var isRecording: Bool {
+        stateLock.withLock { running }
+    }
+
+    func start(at fileURL: URL) throws {
+        guard !isRecording else {
+            throw AudioCaptureError.alreadyRecording
         }
 
         let inputNode = engine.inputNode
@@ -39,173 +62,247 @@ final class AudioCaptureService {
             throw AudioCaptureError.inputUnavailable
         }
 
-        guard let targetFormat = AVAudioFormat(
+        guard
+            let targetFormat = AVAudioFormat(
+                commonFormat: .pcmFormatInt16,
+                sampleRate: 16_000,
+                channels: 1,
+                interleaved: false
+            ),
+            let converter = AVAudioConverter(
+                from: inputFormat,
+                to: targetFormat
+            )
+        else {
+            throw AudioCaptureError.unsupportedFormat
+        }
+
+        try fileManager.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? fileManager.removeItem(at: fileURL)
+
+        let outputFile = try AVAudioFile(
+            forWriting: fileURL,
+            settings: targetFormat.settings,
             commonFormat: .pcmFormatInt16,
-            sampleRate: 16_000,
-            channels: 1,
-            interleaved: true
-        ) else {
-            throw AudioCaptureError.unsupportedFormat
-        }
+            interleaved: false
+        )
 
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw AudioCaptureError.unsupportedFormat
+        stateLock.withLock {
+            self.converter = converter
+            self.outputFile = outputFile
+            self.outputURL = fileURL
+            self.captureError = nil
+            self.rawLevel = 0
+            self.displayedLevel = 0
+            self.running = true
         }
-
-        self.converter = converter
-        self.targetFormat = targetFormat
-        waveformModel.reset()
-        pendingBytes.removeAll(keepingCapacity: true)
 
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, _ in
-            self?.processInputBuffer(buffer, inputFormat: inputFormat)
+        inputNode.installTap(
+            onBus: 0,
+            bufferSize: 2_048,
+            format: inputFormat
+        ) { [weak self] buffer, _ in
+            self?.process(buffer, inputFormat: inputFormat)
         }
 
-        engine.prepare()
-        try engine.start()
-        startChunkTimer()
-        isRunning = true
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            stateLock.withLock {
+                running = false
+                self.converter = nil
+                self.outputFile = nil
+                self.outputURL = nil
+            }
+            throw error
+        }
     }
 
-    @discardableResult
-    func stop() -> Data {
-        guard isRunning else {
-            return Data()
+    func stop() throws -> RecordedAudio {
+        let fileURL = stateLock.withLock { outputURL }
+        guard let fileURL, isRecording else {
+            throw AudioCaptureError.recordingFailed(
+                "No recording is active."
+            )
         }
-
-        isRunning = false
 
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
 
-        chunkTimer?.cancel()
-        chunkTimer = nil
+        let error = stateLock.withLock { () -> Error? in
+            running = false
+            let error = captureError
+            converter = nil
+            outputFile = nil
+            outputURL = nil
+            rawLevel = 0
+            displayedLevel = 0
+            return error
+        }
 
-        return processingQueue.sync {
-            let finalChunk = pendingBytes
-            pendingBytes.removeAll(keepingCapacity: true)
-            return finalChunk
+        if let error {
+            throw AudioCaptureError.recordingFailed(
+                error.localizedDescription
+            )
+        }
+
+        let attributes = try fileManager.attributesOfItem(
+            atPath: fileURL.path
+        )
+        let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
+        guard size > 44 else {
+            throw AudioCaptureError.emptyRecording
+        }
+
+        return RecordedAudio(
+            fileURL: fileURL,
+            format: "wav",
+            mimeType: "audio/wav"
+        )
+    }
+
+    func stopIfNeeded() -> RecordedAudio? {
+        guard isRecording else {
+            return nil
+        }
+        return try? stop()
+    }
+
+    func currentLevel() -> Float {
+        stateLock.withLock {
+            let target = rawLevel
+            let blend: Float = target > displayedLevel ? 0.55 : 0.22
+            displayedLevel += (target - displayedLevel) * blend
+            return displayedLevel
         }
     }
 
-    private func startChunkTimer() {
-        let timer = DispatchSource.makeTimerSource(queue: processingQueue)
-        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
-        timer.setEventHandler { [weak self] in
-            self?.flushPendingBytesLocked()
-        }
-        timer.resume()
-        chunkTimer = timer
-    }
-
-    private func processInputBuffer(_ inputBuffer: AVAudioPCMBuffer, inputFormat: AVAudioFormat) {
-        let metrics = computeMetrics(from: inputBuffer)
-        let level = waveformModel.process(metrics)
-        DispatchQueue.main.async { [weak self] in
-            self?.onLevel?(level)
+    private func process(
+        _ inputBuffer: AVAudioPCMBuffer,
+        inputFormat: AVAudioFormat
+    ) {
+        let level = normalizedLevel(from: inputBuffer)
+        stateLock.withLock {
+            rawLevel = level
         }
 
-        guard let converter, let targetFormat else {
+        let state = stateLock.withLock {
+            (converter, outputFile, running, captureError)
+        }
+        guard
+            state.2,
+            state.3 == nil,
+            let converter = state.0,
+            let outputFile = state.1
+        else {
             return
         }
 
-        let sampleRateRatio = targetFormat.sampleRate / inputFormat.sampleRate
-        let frameCapacity = AVAudioFrameCount(Double(inputBuffer.frameLength) * sampleRateRatio) + 32
-        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else {
+        let sampleRateRatio = converter.outputFormat.sampleRate /
+            inputFormat.sampleRate
+        let frameCapacity = AVAudioFrameCount(
+            Double(inputBuffer.frameLength) * sampleRateRatio
+        ) + 32
+        guard let outputBuffer = AVAudioPCMBuffer(
+            pcmFormat: converter.outputFormat,
+            frameCapacity: frameCapacity
+        ) else {
             return
         }
 
-        var localInputBuffer: AVAudioPCMBuffer? = inputBuffer
-        var error: NSError?
-        _ = converter.convert(to: outputBuffer, error: &error) { _, outStatus in
-            if let buffer = localInputBuffer {
-                outStatus.pointee = .haveData
-                localInputBuffer = nil
+        var sourceBuffer: AVAudioPCMBuffer? = inputBuffer
+        var conversionError: NSError?
+        let status = converter.convert(
+            to: outputBuffer,
+            error: &conversionError
+        ) { _, outputStatus in
+            if let buffer = sourceBuffer {
+                sourceBuffer = nil
+                outputStatus.pointee = .haveData
                 return buffer
-            } else {
-                outStatus.pointee = .noDataNow
-                return nil
+            }
+
+            outputStatus.pointee = .noDataNow
+            return nil
+        }
+
+        guard
+            status != .error,
+            conversionError == nil,
+            outputBuffer.frameLength > 0
+        else {
+            stateLock.withLock {
+                captureError = conversionError ??
+                    AudioCaptureError.unsupportedFormat
+            }
+            return
+        }
+
+        do {
+            try outputFile.write(from: outputBuffer)
+        } catch {
+            stateLock.withLock {
+                captureError = error
             }
         }
-
-        guard error == nil, outputBuffer.frameLength > 0 else {
-            return
-        }
-
-        guard let channelData = outputBuffer.int16ChannelData else {
-            return
-        }
-
-        let frameCount = Int(outputBuffer.frameLength)
-        let byteCount = frameCount * MemoryLayout<Int16>.size
-        let data = Data(bytes: channelData[0], count: byteCount)
-
-        processingQueue.async { [weak self] in
-            self?.pendingBytes.append(data)
-        }
     }
 
-    private func flushPendingBytesLocked() {
-        guard !pendingBytes.isEmpty else {
-            return
-        }
-
-        let chunk = pendingBytes
-        pendingBytes.removeAll(keepingCapacity: true)
-        onChunk?(chunk)
-    }
-
-    private func computeMetrics(from buffer: AVAudioPCMBuffer) -> WaveformInputMetrics {
-        let count = Int(buffer.frameLength)
-        guard count > 0 else {
-            return WaveformInputMetrics(rms: 0, peak: 0, sampleDuration: 0.05)
+    private func normalizedLevel(
+        from buffer: AVAudioPCMBuffer
+    ) -> Float {
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0 else {
+            return 0
         }
 
         let channelCount = max(Int(buffer.format.channelCount), 1)
         var sum: Float = 0
-        var peak: Float = 0
 
         switch buffer.format.commonFormat {
         case .pcmFormatFloat32:
             guard let channelData = buffer.floatChannelData else {
-                return WaveformInputMetrics(rms: 0, peak: 0, sampleDuration: 0.05)
+                return 0
             }
+
             for channel in 0..<channelCount {
                 let samples = channelData[channel]
-                for index in 0..<count {
-                    let sample = samples[index]
-                    let magnitude = abs(sample)
-                    sum += sample * sample
-                    peak = max(peak, magnitude)
+                for index in 0..<frameCount {
+                    sum += samples[index] * samples[index]
                 }
             }
         case .pcmFormatInt16:
             guard let channelData = buffer.int16ChannelData else {
-                return WaveformInputMetrics(rms: 0, peak: 0, sampleDuration: 0.05)
+                return 0
             }
+
             let scale = Float(Int16.max)
             for channel in 0..<channelCount {
                 let samples = channelData[channel]
-                for index in 0..<count {
+                for index in 0..<frameCount {
                     let sample = Float(samples[index]) / scale
-                    let magnitude = abs(sample)
                     sum += sample * sample
-                    peak = max(peak, magnitude)
                 }
             }
         default:
-            return WaveformInputMetrics(rms: 0, peak: 0, sampleDuration: 0.05)
+            return 0
         }
 
-        let totalSamples = Float(count * channelCount)
-        let rms = sqrt(sum / totalSamples)
-        let sampleDuration = Float(Double(buffer.frameLength) / buffer.format.sampleRate)
+        let rms = sqrt(sum / Float(frameCount * channelCount))
+        let decibels = max(-60, 20 * log10(max(rms, 0.000_001)))
+        return pow(min(max((decibels + 50) / 50, 0), 1), 1.5)
+    }
+}
 
-        return WaveformInputMetrics(
-            rms: rms,
-            peak: peak,
-            sampleDuration: sampleDuration
-        )
+private extension NSLock {
+    func withLock<T>(_ operation: () -> T) -> T {
+        lock()
+        defer { unlock() }
+        return operation()
     }
 }

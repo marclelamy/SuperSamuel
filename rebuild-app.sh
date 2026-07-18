@@ -5,16 +5,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 APP_DIR="$REPO_ROOT/app"
 APP_NAME="SuperSamuel"
+BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
 
 SRC_APP="$APP_DIR/$APP_NAME.app"
-BUILD_BIN="$APP_DIR/.build/debug/$APP_NAME"
+INFO_PLIST="$APP_DIR/Info.plist"
+BUILD_BIN="$APP_DIR/.build/$BUILD_CONFIGURATION/$APP_NAME"
 INSTALLED_APP="$HOME/Applications/$APP_NAME.app"
 
 mkdir -p "$HOME/Applications"
 
 cd "$APP_DIR"
-swift build
+swift build -c "$BUILD_CONFIGURATION"
 
+rm -rf "$SRC_APP"
+mkdir -p "$SRC_APP/Contents/MacOS"
+cp "$INFO_PLIST" "$SRC_APP/Contents/Info.plist"
 cp -f "$BUILD_BIN" "$SRC_APP/Contents/MacOS/$APP_NAME"
 
 codesign --force --deep --sign - \
