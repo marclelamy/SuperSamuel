@@ -3,6 +3,25 @@ import XCTest
 @testable import SuperSamuelApp
 
 final class PCM16WAVFileTests: XCTestCase {
+    func testSummaryTreatsHeaderOnlyWAVAsEmptyAudio() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).wav")
+        defer {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+
+        let writer = try PCM16WAVWriter(fileURL: fileURL)
+        try writer.close()
+
+        let summary = try PCM16WAVFile.summarize(at: fileURL)
+        XCTAssertEqual(summary.frameCount, 0)
+        XCTAssertEqual(summary.sampleCount, 0)
+        XCTAssertEqual(summary.duration, 0)
+        XCTAssertEqual(summary.rms, 0)
+        XCTAssertEqual(summary.peak, 0)
+        XCTAssertEqual(summary.sizeBytes, 44)
+    }
+
     func testWriterCanBeVerifiedImmediatelyAfterClose() throws {
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(UUID().uuidString).wav")

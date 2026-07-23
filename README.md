@@ -5,7 +5,7 @@ SuperSamuel is a small native macOS dictation app:
 - Press `Option+Space` to start and stop recording.
 - Record locally as 16 kHz mono WAV audio.
 - Finalize recordings into small, durable chunks.
-- Transcribe once through OpenRouter with `openai/whisper-large-v3`.
+- Transcribe durable chunks through OpenRouter with `openai/whisper-large-v3`.
 - Optionally clean the transcript with any OpenRouter model or preset.
 - Paste the result back into the app that was active while dictating.
 - Optionally attach a screenshot as context for a vision-capable cleanup model.
@@ -152,28 +152,25 @@ one copies its full text. History remains until explicitly cleared.
 
 ## Upload limits
 
-OpenRouter's speech-to-text multipart endpoint currently limits each direct file
-upload to **25 MB**. Its separate Files API has a **100 MB** limit, but that is
-not the endpoint used for transcription.
+SuperSamuel sends each chunk through OpenRouter's base64 JSON `input_audio`
+request path. This avoids the **25 MB** cap that applies to OpenAI-compatible
+multipart uploads. Recordings are still split because OpenRouter documents an
+upstream processing timeout of roughly 60 seconds for each transcription
+request.
 
 SuperSamuel records 16 kHz mono, 16-bit WAV and rotates at the first short pause
-after two minutes, with a five-minute hard maximum. Each request is therefore
-normally about 4–10 MB, regardless of the total recording length. Completed
-chunk transcripts are cached, so retrying after a later failure does not
-retranscribe successful chunks. Silence-only chunks are marked and skipped, so
-an extended pause cannot block the spoken parts that follow it.
-
-Groq's direct API documents **25 MB on the free tier** and **100 MB on the
-developer tier**, while direct attachment uploads are still capped at 25 MB.
-Those Groq account limits do not replace OpenRouter's own request limit when
-calling through OpenRouter.
+after two minutes, with a five-minute hard maximum. Each request is normally
+about 4–10 MB, regardless of the total recording length. Completed chunk
+transcripts are cached, so retrying after a later failure does not retranscribe
+successful chunks. Empty and digitally silent chunks are filtered locally and
+never sent to OpenRouter. If an empty tail follows usable audio, only that tail
+is discarded; the earlier audio and cached transcript parts remain intact.
 
 Official references:
 
 - [OpenRouter speech-to-text](https://openrouter.ai/docs/guides/overview/multimodal/stt)
-- [OpenRouter transcription API](https://openrouter.ai/docs/api/api-reference/stt/create-transcription)
+- [OpenRouter transcription API usage](https://openrouter.ai/docs/guides/overview/multimodal/stt#api-usage)
 - [OpenRouter presets](https://openrouter.ai/docs/guides/features/presets)
-- [Groq speech-to-text](https://console.groq.com/docs/speech-to-text)
 
 ## Manual verification
 

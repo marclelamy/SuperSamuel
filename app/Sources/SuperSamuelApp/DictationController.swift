@@ -371,7 +371,21 @@ final class DictationController {
         let duration = chunkStartedAt.map {
             Date().timeIntervalSince($0)
         } ?? 0
-        let recordedAudio = try audioCapture.stop()
+        let recordedAudio: RecordedAudio
+        do {
+            recordedAudio = try audioCapture.stop()
+        } catch AudioCaptureError.emptyRecording {
+            if try recordingStore
+                .discardCurrentChunkIfPreviousUsableAudioExists(
+                    in: sessionID
+                )
+            {
+                chunkStartedAt = nil
+                return
+            }
+            throw AudioCaptureError.emptyRecording
+        }
+
         try recordingStore.finishCurrentChunk(
             in: sessionID,
             duration: duration,
@@ -384,6 +398,15 @@ final class DictationController {
                persisted: summary
            )
         {
+            if issue == .persistedAudioSilent,
+               try recordingStore
+                   .discardCurrentChunkIfPreviousUsableAudioExists(
+                       in: sessionID
+                   )
+            {
+                chunkStartedAt = nil
+                return
+            }
             throw issue
         }
         chunkStartedAt = nil

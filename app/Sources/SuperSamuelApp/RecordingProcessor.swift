@@ -95,7 +95,7 @@ final class RecordingProcessor {
 
             let rawTranscript: String?
             let hasVerifiedRecordedSignal =
-                (item.0.signalSummary?.peak ?? 0) > 0.000_01
+                item.0.signalSummary?.hasRecordedSignal == true
             if recordingStore.chunkHadNoSpeech(
                 sessionID: session.id,
                 chunkID: item.0.id
