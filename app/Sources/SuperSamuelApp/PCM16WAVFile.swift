@@ -154,7 +154,7 @@ enum PCM16WAVFile {
             sampleRate > 0,
             bitsPerSample == 16,
             let audioRange,
-            audioRange.count >= MemoryLayout<Int16>.size
+            audioRange.count.isMultiple(of: MemoryLayout<Int16>.size)
         else {
             throw PCM16WAVError.invalidFile
         }

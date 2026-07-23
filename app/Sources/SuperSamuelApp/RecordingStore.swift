@@ -165,6 +165,33 @@ final class RecordingStore {
         try save(session)
     }
 
+    func discardCurrentChunkIfPreviousUsableAudioExists(
+        in sessionID: UUID
+    ) throws -> Bool {
+        var session = try load(sessionID)
+        guard
+            session.chunks.count > 1,
+            session.chunks.dropLast().contains(where: {
+                chunkContainsUsableAudio($0, sessionID: sessionID)
+            })
+        else {
+            return false
+        }
+
+        let discardedChunk = session.chunks.removeLast()
+        session.updatedAt = Date()
+        try save(session)
+
+        let discardedURL = audioURL(
+            for: sessionID,
+            chunk: discardedChunk
+        )
+        if fileManager.fileExists(atPath: discardedURL.path) {
+            try? fileManager.removeItem(at: discardedURL)
+        }
+        return true
+    }
+
     func setInputDevice(
         _ device: AudioInputDeviceInfo,
         for sessionID: UUID
@@ -355,14 +382,27 @@ final class RecordingStore {
             guard fileSize(at: url) > 0 else {
                 return nil
             }
+
+            var resolvedChunk = chunk
             let format = url.pathExtension.lowercased()
+            if format == "wav" {
+                guard
+                    let summary = chunk.signalSummary ??
+                        (try? PCM16WAVFile.summarize(at: url)),
+                    summary.hasRecordedSignal
+                else {
+                    return nil
+                }
+                resolvedChunk.signalSummary = summary
+            }
+
             return (
-                chunk,
+                resolvedChunk,
                 RecordedAudio(
                     fileURL: url,
                     format: format,
                     mimeType: format == "wav" ? "audio/wav" : "audio/mp4",
-                    signalSummary: chunk.signalSummary
+                    signalSummary: resolvedChunk.signalSummary
                 )
             )
         }
@@ -591,6 +631,24 @@ final class RecordingStore {
 
     private func audioURL(for sessionID: UUID, chunk: RecordingChunk) -> URL {
         directory(for: sessionID).appendingPathComponent(chunk.filename)
+    }
+
+    private func chunkContainsUsableAudio(
+        _ chunk: RecordingChunk,
+        sessionID: UUID
+    ) -> Bool {
+        let url = audioURL(for: sessionID, chunk: chunk)
+        guard fileSize(at: url) > 0 else {
+            return false
+        }
+
+        guard url.pathExtension.lowercased() == "wav" else {
+            return true
+        }
+
+        let summary = chunk.signalSummary ??
+            (try? PCM16WAVFile.summarize(at: url))
+        return summary?.hasRecordedSignal == true
     }
 
     private func transcriptURL(

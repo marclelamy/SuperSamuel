@@ -2,7 +2,6 @@ import Foundation
 
 enum OpenRouterServiceError: LocalizedError {
     case missingAPIKey
-    case audioTooLarge
     case noSpeechDetected
     case audibleAudioNotTranscribed
     case requestFailed(String)
@@ -12,8 +11,6 @@ enum OpenRouterServiceError: LocalizedError {
         switch self {
         case .missingAPIKey:
             return "Add your OpenRouter API key in Settings before recording."
-        case .audioTooLarge:
-            return "The recording exceeds OpenRouter's 25 MB direct transcription limit."
         case .noSpeechDetected:
             return "No speech was detected. The recording was kept so you can retry it or move it to Trash."
         case .audibleAudioNotTranscribed:
@@ -32,8 +29,6 @@ actor OpenRouterService {
     static let defaultCleanupInstruction =
         "Rewrite the raw transcript into clean written dictation while preserving all meaning and technical details. Remove filler words such as um, uh, like when used as filler, you know, repeated words, false starts, self-corrections, stutters, and speech artifacts. Keep the same intent, facts, uncertainty, and level of detail. Do not summarize, shorten for brevity, add new facts, or change any meaning. Return only the cleaned transcript."
 
-    private static let maximumMultipartAudioBytes = 25 * 1_024 * 1_024
-
     private let transcriptionURL = URL(string: "https://openrouter.ai/api/v1/audio/transcriptions")!
     private let chatURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
     private let urlSession: URLSession
@@ -45,20 +40,22 @@ actor OpenRouterService {
     func transcribe(apiKey: String, audio: RecordedAudio) async throws -> String {
         let apiKey = try validatedAPIKey(apiKey)
         let audioData = try Data(contentsOf: audio.fileURL)
-        guard audioData.count <= Self.maximumMultipartAudioBytes else {
-            throw OpenRouterServiceError.audioTooLarge
-        }
 
-        let boundary = "SuperSamuel-\(UUID().uuidString)"
         var request = URLRequest(url: transcriptionURL)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120
-        request.httpBody = multipartBody(
-            boundary: boundary,
-            audioData: audioData,
-            audio: audio
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: [
+                "model": Self.transcriptionModel,
+                "input_audio": [
+                    "data": audioData.base64EncodedString(),
+                    "format": audio.format
+                ],
+                "temperature": 0
+            ],
+            options: []
         )
 
         let (data, response) = try await urlSession.data(for: request)
@@ -155,30 +152,16 @@ actor OpenRouterService {
         return trimmed
     }
 
-    private func multipartBody(
-        boundary: String,
-        audioData: Data,
-        audio: RecordedAudio
-    ) -> Data {
-        var body = Data()
-        body.appendFormField(name: "model", value: Self.transcriptionModel, boundary: boundary)
-        body.appendFormField(name: "response_format", value: "json", boundary: boundary)
-        body.appendFormField(name: "temperature", value: "0", boundary: boundary)
-        body.append("--\(boundary)\r\n")
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"recording.\(audio.format)\"\r\n")
-        body.append("Content-Type: \(audio.mimeType)\r\n\r\n")
-        body.append(audioData)
-        body.append("\r\n--\(boundary)--\r\n")
-        return body
-    }
-
     private func validate(response: URLResponse, data: Data) throws {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OpenRouterServiceError.invalidResponse
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            let message = extractErrorMessage(from: data) ?? "HTTP \(httpResponse.statusCode)"
+            let status = "HTTP \(httpResponse.statusCode)"
+            let message = extractErrorMessage(from: data).map {
+                "\(status): \($0)"
+            } ?? status
             throw OpenRouterServiceError.requestFailed(message)
         }
     }
@@ -259,17 +242,5 @@ actor OpenRouterService {
         } catch {
             throw OpenRouterServiceError.requestFailed("The attached screenshot could not be read.")
         }
-    }
-}
-
-private extension Data {
-    mutating func append(_ string: String) {
-        append(Data(string.utf8))
-    }
-
-    mutating func appendFormField(name: String, value: String, boundary: String) {
-        append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
-        append("\(value)\r\n")
     }
 }

@@ -10,6 +10,7 @@ final class AudioCaptureHealthTests: XCTestCase {
             framesWritten: 158_000,
             sampleRate: 16_000,
             lastWriteAge: 0.03,
+            writingElapsed: 10,
             conversionMismatchDuration: 0,
             fileSizeBytes: 316_044,
             failureDescription: nil
@@ -26,6 +27,7 @@ final class AudioCaptureHealthTests: XCTestCase {
             framesWritten: 64_000,
             sampleRate: 16_000,
             lastWriteAge: 0.03,
+            writingElapsed: 4,
             conversionMismatchDuration: 1.1,
             fileSizeBytes: 128_044,
             failureDescription: nil
@@ -45,8 +47,63 @@ final class AudioCaptureHealthTests: XCTestCase {
             framesWritten: 20_000,
             sampleRate: 16_000,
             lastWriteAge: 2,
+            writingElapsed: 5,
             conversionMismatchDuration: 0,
             fileSizeBytes: 40_044,
+            failureDescription: nil
+        )
+
+        XCTAssertEqual(
+            AudioCaptureHealthPolicy.liveIssue(for: snapshot),
+            .outputStalled
+        )
+    }
+
+    func testLiveHealthAllowsDelayedInitialBluetoothFrames() {
+        let snapshot = AudioCaptureHealthSnapshot(
+            elapsed: 2.1,
+            rawLevel: 0,
+            writtenLevel: 0,
+            framesWritten: 0,
+            sampleRate: 16_000,
+            lastWriteAge: 2.1,
+            writingElapsed: 0,
+            conversionMismatchDuration: 0,
+            fileSizeBytes: 44,
+            failureDescription: nil
+        )
+
+        XCTAssertNil(AudioCaptureHealthPolicy.liveIssue(for: snapshot))
+    }
+
+    func testLiveHealthAllowsWriterToCatchUpAfterDelayedStartup() {
+        let snapshot = AudioCaptureHealthSnapshot(
+            elapsed: 4,
+            rawLevel: 0.4,
+            writtenLevel: 0.38,
+            framesWritten: 15_500,
+            sampleRate: 16_000,
+            lastWriteAge: 0.03,
+            writingElapsed: 1,
+            conversionMismatchDuration: 0,
+            fileSizeBytes: 31_044,
+            failureDescription: nil
+        )
+
+        XCTAssertNil(AudioCaptureHealthPolicy.liveIssue(for: snapshot))
+    }
+
+    func testLiveHealthRejectsInitialWriterThatNeverStarts() {
+        let snapshot = AudioCaptureHealthSnapshot(
+            elapsed: 8.1,
+            rawLevel: 0,
+            writtenLevel: 0,
+            framesWritten: 0,
+            sampleRate: 16_000,
+            lastWriteAge: 8.1,
+            writingElapsed: 0,
+            conversionMismatchDuration: 0,
+            fileSizeBytes: 44,
             failureDescription: nil
         )
 

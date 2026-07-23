@@ -12,6 +12,10 @@ struct AudioSignalSummary: Codable, Equatable {
     let rms: Float
     let peak: Float
     let sizeBytes: Int64
+
+    var hasRecordedSignal: Bool {
+        frameCount > 0 && peak > 0.000_01
+    }
 }
 
 struct AudioCaptureHealthSnapshot: Equatable {
@@ -21,6 +25,7 @@ struct AudioCaptureHealthSnapshot: Equatable {
     let framesWritten: Int64
     let sampleRate: Double
     let lastWriteAge: TimeInterval
+    let writingElapsed: TimeInterval
     let conversionMismatchDuration: TimeInterval
     let fileSizeBytes: Int64
     let failureDescription: String?
@@ -65,17 +70,22 @@ enum AudioCaptureHealthIssue: LocalizedError, Equatable {
 
 enum AudioCaptureHealthPolicy {
     private static let liveGraceDuration: TimeInterval = 2
+    private static let initialWriteGraceDuration: TimeInterval = 8
     private static let maximumWriteGap: TimeInterval = 1.5
     private static let maximumConversionMismatch: TimeInterval = 1
     private static let minimumProgressRatio = 0.6
     private static let minimumPersistedDurationRatio = 0.8
-    private static let digitalSilencePeak: Float = 0.000_01
-
     static func liveIssue(
         for snapshot: AudioCaptureHealthSnapshot
     ) -> AudioCaptureHealthIssue? {
         if let failure = snapshot.failureDescription {
             return .writeFailed(failure)
+        }
+
+        if snapshot.framesWritten == 0 {
+            return snapshot.elapsed >= initialWriteGraceDuration
+                ? .outputStalled
+                : nil
         }
 
         guard snapshot.elapsed >= liveGraceDuration else {
@@ -90,8 +100,9 @@ enum AudioCaptureHealthPolicy {
             return .convertedOutputSilent
         }
 
-        if snapshot.writtenDuration <
-            snapshot.elapsed * minimumProgressRatio
+        if snapshot.writingElapsed >= liveGraceDuration,
+           snapshot.writtenDuration <
+            snapshot.writingElapsed * minimumProgressRatio
         {
             return .outputStalled
         }
@@ -104,7 +115,7 @@ enum AudioCaptureHealthPolicy {
         framesWritten: Int64,
         persisted: AudioSignalSummary
     ) -> AudioCaptureHealthIssue? {
-        if persisted.frameCount <= 0 || persisted.peak <= digitalSilencePeak {
+        if !persisted.hasRecordedSignal {
             return .persistedAudioSilent
         }
 

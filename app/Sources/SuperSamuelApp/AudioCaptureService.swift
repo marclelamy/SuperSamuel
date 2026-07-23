@@ -75,6 +75,7 @@ final class AudioCaptureService {
     private var displayedLevel: Float = 0
     private var framesWritten: Int64 = 0
     private var recordingStartedUptime: TimeInterval = 0
+    private var firstWriteUptime: TimeInterval?
     private var lastWriteUptime: TimeInterval?
     private var conversionMismatchStartedUptime: TimeInterval?
     private var tapInstalled = false
@@ -149,6 +150,7 @@ final class AudioCaptureService {
             self.displayedLevel = 0
             self.framesWritten = 0
             self.recordingStartedUptime = startedUptime
+            self.firstWriteUptime = nil
             self.lastWriteUptime = nil
             self.conversionMismatchStartedUptime = nil
         }
@@ -223,6 +225,7 @@ final class AudioCaptureService {
                 rawLevel = 0
                 writtenLevel = 0
                 displayedLevel = 0
+                firstWriteUptime = nil
                 lastWriteUptime = nil
                 conversionMismatchStartedUptime = nil
                 return state
@@ -277,32 +280,39 @@ final class AudioCaptureService {
         let now = ProcessInfo.processInfo.systemUptime
         let state = stateLock.withLock {
             (
-                rawLevel,
-                writtenLevel,
-                framesWritten,
-                recordingStartedUptime,
-                lastWriteUptime,
-                conversionMismatchStartedUptime,
-                outputURL,
-                captureError
+                rawLevel: rawLevel,
+                writtenLevel: writtenLevel,
+                framesWritten: framesWritten,
+                recordingStartedUptime: recordingStartedUptime,
+                firstWriteUptime: firstWriteUptime,
+                lastWriteUptime: lastWriteUptime,
+                conversionMismatchStartedUptime:
+                    conversionMismatchStartedUptime,
+                outputURL: outputURL,
+                captureError: captureError
             )
         }
-        let writeReference = state.4 ?? state.3
-        let mismatchDuration = state.5.map {
+        let writeReference =
+            state.lastWriteUptime ?? state.recordingStartedUptime
+        let writingElapsed = state.firstWriteUptime.map {
             max(0, now - $0)
         } ?? 0
-        let fileSize = state.6.map(fileSize(at:)) ?? 0
+        let mismatchDuration = state.conversionMismatchStartedUptime.map {
+            max(0, now - $0)
+        } ?? 0
+        let fileSize = state.outputURL.map(fileSize(at:)) ?? 0
 
         return AudioCaptureHealthSnapshot(
             elapsed: elapsed,
-            rawLevel: state.0,
-            writtenLevel: state.1,
-            framesWritten: state.2,
+            rawLevel: state.rawLevel,
+            writtenLevel: state.writtenLevel,
+            framesWritten: state.framesWritten,
             sampleRate: 16_000,
             lastWriteAge: max(0, now - writeReference),
+            writingElapsed: writingElapsed,
             conversionMismatchDuration: mismatchDuration,
             fileSizeBytes: fileSize,
-            failureDescription: state.7?.localizedDescription
+            failureDescription: state.captureError?.localizedDescription
         )
     }
 
@@ -344,6 +354,7 @@ final class AudioCaptureService {
                 stateLock.withLock {
                     framesWritten += result.frameLength
                     writtenLevel = result.metrics.normalizedLevel
+                    firstWriteUptime = firstWriteUptime ?? now
                     lastWriteUptime = now
 
                     let inputHasSignal =
