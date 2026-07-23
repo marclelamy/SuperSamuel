@@ -100,6 +100,13 @@ record durable WAV chunks
 The recording file and any attached screenshot are temporary and are removed
 only after the final transcript has been saved successfully.
 
+During recording, the waveform is calculated from the converted samples after
+they have been written successfully, rather than directly from the microphone
+input. SuperSamuel continuously checks write progress and stops with a
+recoverable error if microphone input is present but the saved output is
+silent or stalled. Each completed WAV chunk is reopened and verified for
+readable frames, duration, RMS, and peak level before transcription.
+
 ## Recording recovery
 
 Audio is stored under:
@@ -122,11 +129,17 @@ the oldest unsent recording and offers:
 
 - **Send Recording**
 - **Keep for Later**
-- **Delete Recording**
+- **Move to Trash**
 
 The menu-bar **Unsent Recordings** submenu also supports sending, revealing the
-folder in Finder, or deleting after confirmation. New recordings remain blocked
-while unsent recordings exist.
+folder in Finder, or moving it to Trash after confirmation. The recording
+manifest includes the selected input device, route changes, and per-chunk
+signal measurements. New recordings remain blocked while unsent recordings
+exist.
+
+If transcription returns empty text for a chunk whose saved WAV contains a
+verified signal, SuperSamuel retries once and keeps the audio retryable instead
+of permanently marking it as silence.
 
 Successfully processed text is stored under:
 
