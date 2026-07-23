@@ -12,6 +12,13 @@ struct RecordingChunk: Codable, Identifiable {
     let createdAt: Date
     var duration: TimeInterval?
     var sizeBytes: Int64?
+    var signalSummary: AudioSignalSummary?
+}
+
+struct RecordingInputRouteChange: Codable {
+    let occurredAt: Date
+    let previousDevice: AudioInputDeviceInfo?
+    let currentDevice: AudioInputDeviceInfo
 }
 
 struct RecordingSession: Codable, Identifiable {
@@ -32,6 +39,8 @@ struct RecordingSession: Codable, Identifiable {
     var screenshotFilename: String?
     var lastError: String?
     var completedTranscriptID: UUID?
+    var inputDevice: AudioInputDeviceInfo?
+    var inputRouteChanges: [RecordingInputRouteChange]?
 }
 
 struct PendingRecordingSummary: Identifiable {
@@ -41,6 +50,7 @@ struct PendingRecordingSummary: Identifiable {
     let sizeBytes: Int64
     let estimatedDuration: TimeInterval
     let lastError: String?
+    let inputDeviceName: String?
 }
 
 enum RecordingStoreError: LocalizedError {
@@ -103,7 +113,9 @@ final class RecordingStore {
             cleanup: cleanup,
             screenshotFilename: nil,
             lastError: nil,
-            completedTranscriptID: nil
+            completedTranscriptID: nil,
+            inputDevice: nil,
+            inputRouteChanges: nil
         )
 
         try fileManager.createDirectory(
@@ -121,7 +133,8 @@ final class RecordingStore {
             filename: String(format: "chunk-%04d.wav", session.chunks.count + 1),
             createdAt: Date(),
             duration: nil,
-            sizeBytes: nil
+            sizeBytes: nil,
+            signalSummary: nil
         )
 
         session.status = .recording
@@ -133,7 +146,8 @@ final class RecordingStore {
 
     func finishCurrentChunk(
         in sessionID: UUID,
-        duration: TimeInterval
+        duration: TimeInterval,
+        recordedAudio: RecordedAudio
     ) throws {
         var session = try load(sessionID)
         guard let index = session.chunks.indices.last else {
@@ -143,10 +157,39 @@ final class RecordingStore {
         let fileURL = directory(for: sessionID)
             .appendingPathComponent(session.chunks[index].filename)
         let size = fileSize(at: fileURL)
-        session.chunks[index].duration = max(0, duration)
+        session.chunks[index].duration =
+            recordedAudio.signalSummary?.duration ?? max(0, duration)
         session.chunks[index].sizeBytes = size
+        session.chunks[index].signalSummary = recordedAudio.signalSummary
         session.updatedAt = Date()
         try save(session)
+    }
+
+    func setInputDevice(
+        _ device: AudioInputDeviceInfo,
+        for sessionID: UUID
+    ) throws {
+        try update(sessionID) { session in
+            session.inputDevice = device
+        }
+    }
+
+    func recordInputRouteChange(
+        sessionID: UUID,
+        previousDevice: AudioInputDeviceInfo?,
+        currentDevice: AudioInputDeviceInfo
+    ) throws {
+        try update(sessionID) { session in
+            var changes = session.inputRouteChanges ?? []
+            changes.append(
+                RecordingInputRouteChange(
+                    occurredAt: Date(),
+                    previousDevice: previousDevice,
+                    currentDevice: currentDevice
+                )
+            )
+            session.inputRouteChanges = changes
+        }
     }
 
     func prepareForProcessing(
@@ -252,7 +295,7 @@ final class RecordingStore {
             if session.lastError == "OpenRouter returned an invalid response." {
                 var migratedSession = session
                 migratedSession.lastError =
-                    "No speech was detected in this legacy recording. It was kept so you can delete or retry it."
+                    "No speech was detected in this legacy recording. It was kept so you can retry it or move it to Trash."
                 migratedSession.updatedAt = Date()
                 try save(migratedSession)
                 sessions.append(migratedSession)
@@ -301,7 +344,8 @@ final class RecordingStore {
             chunkCount: session.chunks.count,
             sizeBytes: totalSize,
             estimatedDuration: duration,
-            lastError: session.lastError
+            lastError: session.lastError,
+            inputDeviceName: session.inputDevice?.name
         )
     }
 
@@ -317,7 +361,8 @@ final class RecordingStore {
                 RecordedAudio(
                     fileURL: url,
                     format: format,
-                    mimeType: format == "wav" ? "audio/wav" : "audio/mp4"
+                    mimeType: format == "wav" ? "audio/wav" : "audio/mp4",
+                    signalSummary: chunk.signalSummary
                 )
             )
         }
@@ -424,6 +469,19 @@ final class RecordingStore {
         }
     }
 
+    func trashSession(_ sessionID: UUID) throws {
+        let url = directory(for: sessionID)
+        guard fileManager.fileExists(atPath: url.path) else {
+            return
+        }
+
+        var resultingURL: NSURL?
+        try fileManager.trashItem(
+            at: url,
+            resultingItemURL: &resultingURL
+        )
+    }
+
     func directoryURL(for sessionID: UUID) -> URL {
         directory(for: sessionID)
     }
@@ -497,7 +555,8 @@ final class RecordingStore {
                     byteCount: fileSize(at: url),
                     fileExtension: url.pathExtension
                 ),
-                sizeBytes: fileSize(at: url)
+                sizeBytes: fileSize(at: url),
+                signalSummary: nil
             )
         }
         let session = RecordingSession(
@@ -513,7 +572,9 @@ final class RecordingStore {
             ),
             screenshotFilename: nil,
             lastError: "Recovered audio whose metadata could not be read.",
-            completedTranscriptID: nil
+            completedTranscriptID: nil,
+            inputDevice: nil,
+            inputRouteChanges: nil
         )
         try save(session)
         return session

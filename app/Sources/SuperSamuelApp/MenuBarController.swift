@@ -203,7 +203,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             actions.addItem(revealItem)
 
             let deleteItem = NSMenuItem(
-                title: "Delete Recording...",
+                title: "Move Recording to Trash...",
                 action: #selector(handleDeletePendingRecording(_:)),
                 keyEquivalent: ""
             )

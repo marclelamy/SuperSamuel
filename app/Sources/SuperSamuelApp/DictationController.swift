@@ -46,6 +46,8 @@ final class DictationController {
     private var lastTranscript = ""
     private var targetApplication: NSRunningApplication?
     private var activeRecordingID: UUID?
+    private var activeInputDevice: AudioInputDeviceInfo?
+    private var lastInputDeviceCheckUptime: TimeInterval = 0
 
     private var processingTask: Task<Void, Never>?
     private var processingSessionID: UUID?
@@ -235,8 +237,14 @@ final class DictationController {
             let chunkURL = try recordingStore.beginChunk(in: session.id)
 
             do {
-                try audioCapture.start(at: chunkURL)
+                let inputDevice = try audioCapture.start(at: chunkURL)
+                try recordingStore.setInputDevice(
+                    inputDevice,
+                    for: session.id
+                )
+                activeInputDevice = inputDevice
             } catch {
+                _ = audioCapture.stopIfNeeded()
                 try? recordingStore.deleteSession(session.id)
                 refreshPersistentMenus()
                 throw error
@@ -249,7 +257,10 @@ final class DictationController {
             hasDetectedMicrophoneSignal = false
             isShowingMicrophoneWarning = false
             startElapsedTimer()
-            appState.resetForRecording()
+            appState.resetForRecording(
+                deviceName: activeInputDevice?.name ??
+                    "System Default Microphone"
+            )
             overlayController?.show()
             menuBarController?.updateStatusTitle(for: .recording)
         } catch {
@@ -279,7 +290,11 @@ final class DictationController {
             stopElapsedTimer()
             clearAttachedScreenshot()
             refreshPersistentMenus()
-            showError(error.localizedDescription)
+            recoverySessionID = sessionID
+            showError(
+                error.localizedDescription,
+                recoverable: true
+            )
             return
         }
 
@@ -334,13 +349,21 @@ final class DictationController {
         do {
             try finishCurrentChunk(sessionID: sessionID)
             let nextChunkURL = try recordingStore.beginChunk(in: sessionID)
-            try audioCapture.start(at: nextChunkURL)
+            let inputDevice = try audioCapture.start(at: nextChunkURL)
+            registerInputDevice(
+                inputDevice,
+                sessionID: sessionID
+            )
             self.chunkStartedAt = Date()
             chunkSilenceStartedAt = nil
         } catch {
             preserveActiveRecording(message: error.localizedDescription)
             refreshPersistentMenus()
-            showError(error.localizedDescription)
+            recoverySessionID = sessionID
+            showError(
+                error.localizedDescription,
+                recoverable: true
+            )
         }
     }
 
@@ -348,11 +371,21 @@ final class DictationController {
         let duration = chunkStartedAt.map {
             Date().timeIntervalSince($0)
         } ?? 0
-        _ = try audioCapture.stop()
+        let recordedAudio = try audioCapture.stop()
         try recordingStore.finishCurrentChunk(
             in: sessionID,
-            duration: duration
+            duration: duration,
+            recordedAudio: recordedAudio
         )
+        if let summary = recordedAudio.signalSummary,
+           let issue = AudioCaptureHealthPolicy.finalIssue(
+               expectedDuration: duration,
+               framesWritten: recordedAudio.framesWritten ?? 0,
+               persisted: summary
+           )
+        {
+            throw issue
+        }
         chunkStartedAt = nil
     }
 
@@ -586,11 +619,11 @@ final class DictationController {
         }
 
         let alert = NSAlert()
-        alert.messageText = "Delete this saved recording?"
+        alert.messageText = "Move this saved recording to Trash?"
         alert.informativeText =
-            "This permanently deletes the audio and any cached partial transcript."
+            "The audio and any cached partial transcript can be recovered from Trash until it is emptied."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete Recording")
+        alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
 
@@ -600,7 +633,7 @@ final class DictationController {
         }
 
         do {
-            try recordingStore.deleteSession(sessionID)
+            try recordingStore.trashSession(sessionID)
             refreshPersistentMenus()
             resetToIdle()
         } catch {
@@ -644,7 +677,7 @@ final class DictationController {
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Send Recording")
         alert.addButton(withTitle: "Keep for Later")
-        alert.addButton(withTitle: "Delete Recording")
+        alert.addButton(withTitle: "Move to Trash")
         alert.buttons.last?.hasDestructiveAction = true
 
         let pasteTarget = currentPasteTarget()
@@ -676,11 +709,14 @@ final class DictationController {
         )
         let duration = formattedDuration(recording.estimatedDuration)
         let error = recording.lastError.map { "\n\nLast error: \($0)" } ?? ""
+        let input = recording.inputDeviceName.map {
+            "\nInput: \($0)"
+        } ?? ""
 
         return """
         Recorded \(date)
         Duration: \(duration)
-        Audio: \(recording.chunkCount) saved parts, \(size)
+        Audio: \(recording.chunkCount) saved parts, \(size)\(input)
 
         New recordings are blocked until saved recordings are sent or deleted.\(error)
         """
@@ -772,6 +808,8 @@ final class DictationController {
         processingSessionID = nil
         stopElapsedTimer()
         targetApplication = nil
+        activeInputDevice = nil
+        appState.recordingDeviceName = nil
         clearAttachedScreenshot()
         overlayController?.hide()
         appState.setPhase(.idle)
@@ -811,8 +849,20 @@ final class DictationController {
                 self.appState.setElapsed(
                     seconds: Date().timeIntervalSince(startedAt)
                 )
+                let health = self.audioCapture.healthSnapshot(
+                    elapsed: self.appState.elapsedSeconds
+                )
                 let level = self.audioCapture.currentLevel()
                 self.appState.pushLevel(level)
+                self.monitorInputDevice()
+
+                if let issue = AudioCaptureHealthPolicy.liveIssue(
+                    for: health
+                ) {
+                    self.handleLiveCaptureFailure(issue)
+                    return
+                }
+
                 self.updateMicrophoneSignalStatus(
                     level: level,
                     elapsed: self.appState.elapsedSeconds
@@ -845,8 +895,69 @@ final class DictationController {
 
         isShowingMicrophoneWarning = true
         appState.setProgressMessage(
-            "No microphone signal detected — check your input device."
+            "No recorded signal from \(activeInputDevice?.name ?? "the selected microphone") — check your input device."
         )
+    }
+
+    private func handleLiveCaptureFailure(
+        _ issue: AudioCaptureHealthIssue
+    ) {
+        guard let sessionID = activeRecordingID else {
+            return
+        }
+
+        let message = issue.localizedDescription
+        preserveActiveRecording(message: message)
+        recoverySessionID = sessionID
+        showError(message, recoverable: true)
+    }
+
+    private func monitorInputDevice() {
+        guard let sessionID = activeRecordingID else {
+            return
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastInputDeviceCheckUptime >= 1 else {
+            return
+        }
+        lastInputDeviceCheckUptime = now
+
+        let currentDevice = audioCapture.currentInputDeviceInfo()
+        guard currentDevice != activeInputDevice else {
+            return
+        }
+
+        registerInputDevice(
+            currentDevice,
+            sessionID: sessionID
+        )
+        appState.setProgressMessage(
+            "Input changed to \(currentDevice.name) — verifying saved audio..."
+        )
+    }
+
+    private func registerInputDevice(
+        _ inputDevice: AudioInputDeviceInfo,
+        sessionID: UUID
+    ) {
+        let previousDevice = activeInputDevice
+        if previousDevice != inputDevice {
+            do {
+                try recordingStore.recordInputRouteChange(
+                    sessionID: sessionID,
+                    previousDevice: previousDevice,
+                    currentDevice: inputDevice
+                )
+            } catch {
+                print(
+                    "Could not save input route change: \(error.localizedDescription)"
+                )
+            }
+        }
+
+        activeInputDevice = inputDevice
+        appState.recordingDeviceName = inputDevice.name
     }
 
     private func stopElapsedTimer() {
@@ -858,6 +969,8 @@ final class DictationController {
         isRotatingChunk = false
         hasDetectedMicrophoneSignal = false
         isShowingMicrophoneWarning = false
+        activeInputDevice = nil
+        lastInputDeviceCheckUptime = 0
     }
 
     private func currentPasteTarget() -> NSRunningApplication? {

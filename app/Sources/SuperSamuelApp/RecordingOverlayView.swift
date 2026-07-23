@@ -56,6 +56,7 @@ struct RecordingOverlayView: View {
                 Text(statusLabel)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(statusColor.opacity(0.96))
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 10)
@@ -165,7 +166,7 @@ struct RecordingOverlayView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Color.accentColor)
 
-                    Button("Delete…") {
+                    Button("Trash…") {
                         onDelete?()
                     }
                     .buttonStyle(.bordered)
@@ -217,7 +218,12 @@ struct RecordingOverlayView: View {
         case .idle:
             return "Ready"
         case .recording:
-            return "Recording"
+            if let deviceName = state.recordingDeviceName,
+               !deviceName.isEmpty
+            {
+                return "Recording · \(deviceName)"
+            }
+            return "Recording · System microphone"
         case .transcribing:
             return "Transcribing"
         case .cleaning:

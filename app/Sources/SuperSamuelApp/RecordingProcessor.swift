@@ -94,10 +94,12 @@ final class RecordingProcessor {
             )
 
             let rawTranscript: String?
+            let hasVerifiedRecordedSignal =
+                (item.0.signalSummary?.peak ?? 0) > 0.000_01
             if recordingStore.chunkHadNoSpeech(
                 sessionID: session.id,
                 chunkID: item.0.id
-            ) {
+            ), !hasVerifiedRecordedSignal {
                 rawTranscript = nil
             } else if let cached = recordingStore.cachedTranscript(
                 sessionID: session.id,
@@ -119,11 +121,30 @@ final class RecordingProcessor {
                     )
                     rawTranscript = transcript
                 } catch OpenRouterServiceError.noSpeechDetected {
-                    try recordingStore.markChunkAsNoSpeech(
-                        sessionID: session.id,
-                        chunkID: item.0.id
-                    )
-                    rawTranscript = nil
+                    if hasVerifiedRecordedSignal {
+                        do {
+                            let transcript = try await openRouterService.transcribe(
+                                apiKey: apiKey,
+                                audio: item.1
+                            )
+                            try recordingStore.saveTranscript(
+                                transcript,
+                                sessionID: session.id,
+                                chunkID: item.0.id,
+                                cleaned: false
+                            )
+                            rawTranscript = transcript
+                        } catch OpenRouterServiceError.noSpeechDetected {
+                            throw OpenRouterServiceError
+                                .audibleAudioNotTranscribed
+                        }
+                    } else {
+                        try recordingStore.markChunkAsNoSpeech(
+                            sessionID: session.id,
+                            chunkID: item.0.id
+                        )
+                        rawTranscript = nil
+                    }
                 }
             }
 

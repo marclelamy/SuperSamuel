@@ -20,6 +20,7 @@ final class AppState: ObservableObject {
     @Published var screenshotStatusMessage: String?
     @Published var isCapturingScreenshot = false
     @Published var showsRecoveryActions = false
+    @Published var recordingDeviceName: String?
 
     private let maxWaveSamples = 96
 
@@ -59,11 +60,12 @@ final class AppState: ObservableObject {
         transcriptPreviewLines = [message]
     }
 
-    func resetForRecording() {
+    func resetForRecording(deviceName: String) {
         setPhase(.recording)
         setElapsed(seconds: 0)
         waveformSamples = Array(repeating: 0, count: maxWaveSamples)
         transcriptPreviewLines = ["Recording locally..."]
+        recordingDeviceName = deviceName
         attachedScreenshot = nil
         screenshotStatusMessage = nil
         isCapturingScreenshot = false
