@@ -826,6 +826,78 @@ final class OpenRouterServiceTests: XCTestCase {
         }
     }
 
+    func testGemmaCleanupUsesOnlyCerebrasWithoutThinking() async throws {
+        URLProtocolStub.handler = { request in
+            let body = try XCTUnwrap(requestBody(request))
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(payload["model"] as? String, "google/gemma-4-31b-it")
+            let provider = try XCTUnwrap(payload["provider"] as? [String: Any])
+            XCTAssertEqual(provider["only"] as? [String], ["cerebras/fp16"])
+            XCTAssertEqual(provider["allow_fallbacks"] as? Bool, false)
+            XCTAssertEqual(provider["require_parameters"] as? Bool, true)
+            let reasoning = try XCTUnwrap(payload["reasoning"] as? [String: Any])
+            XCTAssertEqual(reasoning["enabled"] as? Bool, false)
+            XCTAssertEqual(reasoning["exclude"] as? Bool, true)
+            XCTAssertNil(reasoning["effort"])
+            let messages = try XCTUnwrap(payload["messages"] as? [[String: Any]])
+            XCTAssertEqual(messages.first?["content"] as? String, "My exact editing prompt.")
+            let content = try userContent(from: payload)
+            XCTAssertEqual(content.count, 1)
+            XCTAssertEqual(content.first?["text"] as? String, "Um, keep 0.05.")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                Data(#"{"provider":"Cerebras","choices":[{"message":{"content":"Keep 0.05.","reasoning":"This must not be pasted."}}]}"#.utf8)
+            )
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolStub.self]
+        let service = OpenRouterService(urlSession: URLSession(configuration: configuration))
+        let result = try await service.cleanUp(
+            apiKey: "test-key", transcript: "Um, keep 0.05.",
+            configuration: TranscriptCleanupConfiguration(
+                model: OpenRouterService.defaultCleanupModel, instructions: "My exact editing prompt."
+            )
+        )
+        XCTAssertEqual(result, "Keep 0.05.")
+    }
+
+    func testGemmaCleanupWithSyntheticTextWhenExplicitlyEnabled() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["SUPERSAMUEL_GEMMA_LIVE_TEST"] == "1" else {
+            throw XCTSkip("Set SUPERSAMUEL_GEMMA_LIVE_TEST=1 to enable the paid synthetic cleanup check.")
+        }
+        let apiKey = try XCTUnwrap(environment["OPENROUTER_API_KEY"])
+        let longTranscript = (1...12).map { item in
+            "For item \(item), keep build 7.\(item)-rc2 and limit \(item * 25) ms. Do not change /api/v\(item)/items. We could use ArvenDB; another option is NacreStore. I think we should wait for the measurements before deciding."
+        }.joined(separator: "\n\n")
+        let cases: [(String, String)] = [
+            ("Uh, we, we should keep build 7.42-rc2 and the value 0.05.",
+             "We should keep build 7.42-rc2 and the value 0.05."),
+            ("Send it Monday, sorry, Wednesday. Maybe ask Jules first.",
+             "Send it Wednesday. Maybe ask Jules first."),
+            ("Could you tell me whether we should use ArvenDB or try NacreStore? I am not sure.",
+             "Could you tell me whether we should use ArvenDB or try NacreStore? I am not sure."),
+            ("Euh, je, je pense qu'on garde le timeout à 250 ms. Ne change pas le build 7.42-rc2.",
+             "Je pense qu'on garde le timeout à 250 ms. Ne change pas le build 7.42-rc2."),
+            ("This is really, really important. Do not change /api/v7/items. Another option is to wait.",
+             "This is really, really important. Do not change /api/v7/items. Another option is to wait."),
+            (longTranscript, longTranscript)
+        ]
+        let service = OpenRouterService()
+        for (index, item) in cases.enumerated() {
+            let started = Date()
+            let response = try await service.performAudioDictation(
+                apiKey: apiKey, model: OpenRouterService.defaultCleanupModel,
+                audio: nil, draftTranscript: item.0,
+                rewriteInstruction: OpenRouterService.defaultCleanupInstruction
+            )
+            let elapsed = Date().timeIntervalSince(started)
+            print("Gemma synthetic \(index + 1): \(String(format: "%.3f", elapsed))s, provider=\(response.provider ?? "unknown"), tokens=\(response.usage?.completionTokens ?? 0), cost=\(response.usage?.cost ?? 0), output=\(response.text)")
+            XCTAssertEqual(response.provider, "Cerebras")
+            XCTAssertEqual(response.text, item.1)
+        }
+    }
+
     @MainActor
     func testLongInstructionsDeliverCompletedLiveTranscriptWithoutAudioUpload() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
