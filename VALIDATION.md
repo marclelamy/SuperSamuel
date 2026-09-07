@@ -1,5 +1,57 @@
 # Implementation verification
 
+## Gemma cleanup (September 7, 2026)
+
+Version **1.3.7** changes optional text cleanup to `google/gemma-4-31b-it`, pinned
+to OpenRouter's `cerebras/fp16` endpoint with thinking disabled. The updated prompt
+explicitly preserves identifiers, negation, corrections, and mixed languages,
+and treats dictated questions/commands as text to edit. Saved Gemini 3.8 cleanup
+settings migrate once; later model choices and existing custom prompts persist.
+
+The Swift suite passed **85 tests**, with the two paid API checks skipped and no
+failures. Coverage includes Cerebras routing without provider fallback, disabled
+reasoning, separation of reasoning from pasted content, and one-time settings
+migration. The release build and whitespace checks passed.
+
+An explicitly enabled API check ran the actual Swift service against six
+synthetic text cases using the app's exact default prompt and request settings.
+All resolved to **Cerebras** and matched the expected output exactly:
+
+| Case | Complete cleanup request | Output tokens |
+| --- | ---: | ---: |
+| Fillers, duplicate words, build identifier, decimal | 0.436 s | 22 |
+| Explicit day correction and uncertainty | 0.307 s | 10 |
+| Dictated question and unfamiliar product names | 0.353 s | 23 |
+| French/English, negation, timeout, build identifier | 0.240 s | 30 |
+| Deliberate repetition, negation, API path, alternative | 0.328 s | 25 |
+| Twelve paragraphs with distinct identifiers and quantities | 1.085 s | 714 |
+
+An earlier five-case smoke run also passed, with requests taking 0.225–0.740 s.
+These are synthetic observations, including request startup and full response
+generation, not percentile estimates or Stop-to-paste measurements. They do not
+establish fidelity across real dictation. No private recordings or transcripts
+were uploaded. The local detailed log is `.context/gemma-cleanup-live-check.log`.
+
+To rerun the paid synthetic check with an explicitly supplied API key:
+
+```bash
+SUPERSAMUEL_GEMMA_LIVE_TEST=1 swift test --package-path app \
+  --filter OpenRouterServiceTests/testGemmaCleanupWithSyntheticTextWhenExplicitlyEnabled
+```
+
+It requires `OPENROUTER_API_KEY` in the environment. The test does not read the
+app's stored credentials or request Keychain access. Ordinary test runs skip it.
+
+Version **1.3.7** was installed and relaunched from
+`~/Applications/SuperSamuel.app` after the active recording finished. The saved
+cleanup model is now `google/gemma-4-31b-it`, cleanup remains enabled, and no
+custom prompt overrides the new default. The installed executable's UUID matches
+the release build (`5A3FC6BD-5CDF-3226-BD40-DD7A89018763`), and its code signature
+verifies with the existing bundle identifier. The previous bundle is saved in
+`.context/before-gemma/`. Automated UI inspection timed out; installation and
+settings were verified through the running process, signed bundle, and saved
+preferences. A real microphone-to-paste check remains for normal use.
+
 ## Current PR state (September 5, 2026)
 
 The current implementation uses faithful live recognition with the personal

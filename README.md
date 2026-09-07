@@ -35,23 +35,29 @@ models; editing happens in the optional cleanup step below.
 
 In Settings, enable **Text cleanup → Clean up transcript after Stop** to have an
 OpenRouter chat model edit the completed transcript. The default cleanup model
-is `google/gemini-3.8-flash`; the model field is editable. This adds one text-only
+is `google/gemma-4-31b-it`; the model field is editable. This adds one text-only
 request after transcription, with a **Cleaning up transcript...** status.
-Gemini 3.8 Flash text cleanup prefers `google-ai-studio/priority`, with fallback
-enabled. Priority has a higher token rate; reported token throughput does not
-include request startup latency. Other models retain throughput-based routing.
+Gemma cleanup uses only OpenRouter's `cerebras/fp16` endpoint with thinking
+disabled. If Cerebras is unavailable, cleanup reports an error and keeps the
+draft for retry. Choosing Gemini 3.8 Flash still prefers Google AI Studio Priority
+with provider fallback; other models retain throughput-based routing.
 
 **Editing instructions** is the app's single editable cleanup prompt. Its default
 preserves the speaker's wording and details while removing clear speech
-disfluencies, with examples covering versions, corrections, emphasis, and
-alternative ideas. **Restore Default** restores that same prompt. The full prompt
+disfluencies, with explicit rules for technical identifiers, numbers, negation,
+and dictated commands. Examples cover corrections, emphasis, alternative ideas,
+and mixed French/English. **Restore Default** restores that same prompt. The full prompt
 is sent as the system message, with only the raw transcript in the user message;
 no additional editing instructions are prepended or appended. Both live
 transcription and saved-audio fallback feed this step, without audio or screenshots.
 
-On the first launch after this update, the old saved transcription and cleanup
-prompts are replaced with the new default. Subsequent edits persist across
-relaunches. Model, dictionary, and cleanup-enabled preferences are preserved.
+On the first launch after the Gemma update, a saved `google/gemini-3.8-flash`
+cleanup selection moves to Gemma. Other model choices, custom editing instructions,
+dictionary entries, and the cleanup-enabled preference are preserved. Changing
+back to Gemini afterward persists across relaunches. Existing users without
+custom editing instructions automatically get the updated default prompt.
+The earlier one-time migration of legacy transcription/cleanup prompts still
+applies when upgrading from versions that predate the separate cleanup step.
 
 The recording snapshots its cleanup settings at Start. History stores those settings,
 the original `draft-transcript.txt`, and the cleaned final transcript with all audio.

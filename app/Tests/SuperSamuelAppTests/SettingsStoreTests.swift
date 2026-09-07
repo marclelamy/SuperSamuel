@@ -10,6 +10,7 @@ final class SettingsStoreTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let settings = SettingsStore(defaults: defaults, credentials: CredentialStore(service: suite))
         XCTAssertNil(settings.cleanupConfiguration)
+        XCTAssertEqual(settings.cleanupModel, "google/gemma-4-31b-it")
         XCTAssertEqual(settings.cleanupInstructions, OpenRouterService.defaultCleanupInstruction)
         settings.cleanupEnabled = true
         settings.cleanupInstructions = String(repeating: "Keep names. ", count: 200)
@@ -67,6 +68,26 @@ final class SettingsStoreTests: XCTestCase {
         settings.cleanupInstructions = "  \n "
         let reloaded = SettingsStore(defaults: defaults, credentials: CredentialStore(service: suite))
         XCTAssertEqual(reloaded.cleanupConfiguration?.instructions, OpenRouterService.defaultCleanupInstruction)
+    }
+
+    func testGeminiCleanupMigratesOnceWithoutReplacingCustomInstructions() {
+        let suite = "SuperSamuelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "minimalCleanupPromptInstalled")
+        defaults.set(true, forKey: "transcriptCleanupEnabled")
+        defaults.set("  google/gemini-3.8-flash  ", forKey: "transcriptCleanupModel")
+        defaults.set("Keep my custom editing rules.", forKey: "transcriptCleanupInstructions")
+
+        let settings = SettingsStore(defaults: defaults, credentials: CredentialStore(service: suite))
+        XCTAssertTrue(settings.cleanupEnabled)
+        XCTAssertEqual(settings.cleanupModel, "google/gemma-4-31b-it")
+        XCTAssertEqual(settings.cleanupInstructions, "Keep my custom editing rules.")
+
+        settings.cleanupModel = "google/gemini-3.8-flash"
+        let reloaded = SettingsStore(defaults: defaults, credentials: CredentialStore(service: suite))
+        XCTAssertEqual(reloaded.cleanupModel, "google/gemini-3.8-flash")
+        XCTAssertEqual(reloaded.cleanupInstructions, "Keep my custom editing rules.")
     }
 
     func testRealtimeOpenAIKeyUsesSeparateKeychainEntry() throws {

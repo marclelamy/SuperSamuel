@@ -210,7 +210,7 @@ private struct SettingsView: View {
                         settings.cleanupEnabled = value
                     }
                 if cleanupEnabled {
-                    TextField("google/gemini-3.8-flash", text: $cleanupModel)
+                    TextField(OpenRouterService.defaultCleanupModel, text: $cleanupModel)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12, design: .monospaced))
                         .padding(11)
@@ -218,7 +218,10 @@ private struct SettingsView: View {
                         .onChange(of: cleanupModel) { settings.cleanupModel = $0 }
                     Text("OpenRouter chat model")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
-                    if settings.cleanupModel == "google/gemini-3.8-flash" {
+                    if settings.cleanupModel == OpenRouterService.defaultCleanupModel {
+                        Text("Uses Cerebras with thinking off for faster cleanup. If unavailable, your draft is kept for retry.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    } else if settings.cleanupModel == "google/gemini-3.8-flash" {
                         Text("Prefers Google AI Studio Priority at its higher rate, with fallback if unavailable.")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }

@@ -75,6 +75,7 @@ final class SettingsStore {
         static let cleanupModel = "transcriptCleanupModel"
         static let cleanupInstructions = "transcriptCleanupInstructions"
         static let minimalCleanupPromptInstalled = "minimalCleanupPromptInstalled"
+        static let gemmaCleanupDefaultInstalled = "gemmaCleanupDefaultInstalled"
     }
 
     private let defaults: UserDefaults
@@ -93,6 +94,7 @@ final class SettingsStore {
         self.openRouterCredentials = credentials
         self.openAICredentials = openAICredentials
         replaceLegacyPrompts()
+        migrateCleanupModel()
         registerDefaults()
         migrateLegacyAPIKey()
     }
@@ -186,7 +188,7 @@ final class SettingsStore {
     var cleanupModel: String {
         get {
             let value = defaults.string(forKey: Keys.cleanupModel)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return value.isEmpty ? "google/gemini-3.8-flash" : value
+            return value.isEmpty ? OpenRouterService.defaultCleanupModel : value
         }
         set { defaults.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.cleanupModel) }
     }
@@ -241,6 +243,16 @@ final class SettingsStore {
         defaults.removeObject(forKey: Keys.legacyCleanupPrompt)
         defaults.removeObject(forKey: Keys.cleanupInstructions)
         defaults.set(true, forKey: Keys.minimalCleanupPromptInstalled)
+    }
+
+    private func migrateCleanupModel() {
+        guard !defaults.bool(forKey: Keys.gemmaCleanupDefaultInstalled) else { return }
+        let model = defaults.string(forKey: Keys.cleanupModel)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if model == "google/gemini-3.8-flash" {
+            defaults.set(OpenRouterService.defaultCleanupModel, forKey: Keys.cleanupModel)
+        }
+        defaults.set(true, forKey: Keys.gemmaCleanupDefaultInstalled)
     }
 
     var usesLocalCredentials: Bool {
